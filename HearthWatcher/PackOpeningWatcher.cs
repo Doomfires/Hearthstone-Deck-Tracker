@@ -8,38 +8,59 @@ using HearthWatcher.Providers;
 
 namespace HearthWatcher
 {
-	public class PackOpeningWatcher : Watcher
+	public class PackOpeningWatcher
 	{
 		public delegate void PackEventHandler(object sender, PackEventArgs args);
 
 		private readonly List<Card> _previousPack = new List<Card>();
+		private readonly int _delay;
+		private bool _running;
+		private bool _watch;
 		private bool _invokeEvent;
 		private readonly IPackProvider _packProvider;
 
-		public PackOpeningWatcher(IPackProvider packProvider, int delay = 500) : base(delay)
+		public PackOpeningWatcher(IPackProvider packProvider, int delay = 500)
 		{
 			if(packProvider == null)
 				throw new ArgumentNullException(nameof(packProvider));
 			_packProvider = packProvider;
+			_delay = delay;
 		}
 		public event PackEventHandler NewPackEventHandler;
 
-		public override void Update()
+		public void Run()
 		{
-			var cards = _packProvider.GetCards();
-			if(cards?.Count == 5)
+			_watch = true;
+			if(!_running)
+				CheckForPacks();
+		}
+
+		public void Stop() => _watch = false;
+
+		private async void CheckForPacks()
+		{
+			_running = true;
+			while(_watch)
 			{
-				if(cards.All(x => _previousPack.Any(c => c.Id == x.Id & c.Premium == x.Premium)))
-					return;
-				if(_previousPack.Any())
+				await Task.Delay(_delay);
+				if(!_watch)
+					break;
+				var cards = _packProvider.GetCards();
+				if(cards?.Count == 5)
+				{
+					if(cards.All(x => _previousPack.Any(c => c.Id == x.Id & c.Premium == x.Premium)))
+						continue;
+					if(_previousPack.Any())
+						_invokeEvent = true;
+					_previousPack.Clear();
+					_previousPack.AddRange(cards);
+					if(_invokeEvent)
+						NewPackEventHandler?.Invoke(this, new PackEventArgs(cards, _packProvider.GetPackId()));
+				}
+				else
 					_invokeEvent = true;
-				_previousPack.Clear();
-				_previousPack.AddRange(cards);
-				if(_invokeEvent)
-					NewPackEventHandler?.Invoke(this, new PackEventArgs(cards, _packProvider.GetPackId()));
 			}
-			else
-				_invokeEvent = true;
+			_running = false;
 		}
 	}
 }

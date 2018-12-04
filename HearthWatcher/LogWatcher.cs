@@ -59,8 +59,7 @@ namespace HearthWatcher
 						}
 					}
 				});
-				if(newLines.Count > 0)
-					OnNewLines?.Invoke(new List<LogLine>(newLines.Values.SelectMany(x => x)));
+				OnNewLines?.Invoke(new List<LogLine>(newLines.Values.SelectMany(x => x)));
 				newLines.Clear();
 				await Task.Delay(UpdateDelay);
 			}

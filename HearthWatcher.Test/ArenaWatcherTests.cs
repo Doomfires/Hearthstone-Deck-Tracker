@@ -277,7 +277,8 @@ namespace HearthWatcher.Test
 			};
 			_watcher.Update();
 			_provider.DraftChoices = null;
-			_watcher.Update();
+			var exit = _watcher.Update();
+			Assert.IsTrue(exit);
 			Assert.AreEqual("AT_001", _currentPick.Id);
 			Assert.IsNotNull(_currentArenaInfo);
 			Assert.IsNull(_currentRewardData);
@@ -291,7 +292,8 @@ namespace HearthWatcher.Test
 				Deck = new Deck() {Id = 1, Hero = "HERO_02", Cards = new List<Card> {NewCard("AT_001", 30)}},
 				Rewards = new List<RewardData> {new GoldRewardData(50)}
 			};
-			_watcher.Update();
+			var exit = _watcher.Update();
+			Assert.IsTrue(exit);
 			Assert.IsNull(_currentPick);
 			Assert.IsNull(_currentChoices);
 			Assert.IsNotNull(_currentArenaInfo);
