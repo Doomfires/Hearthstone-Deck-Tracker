@@ -3,8 +3,6 @@
 using System;
 using System.Collections.Generic;
 using HearthDb.Enums;
-using Hearthstone_Deck_Tracker.Enums;
-using Hearthstone_Deck_Tracker.Replay;
 
 #endregion
 
@@ -25,7 +23,6 @@ namespace Hearthstone_Deck_Tracker.LogReader.Interfaces
 		Dictionary<int, IList<string>> KnownCardIds { get; set; }
 		int LastCardPlayed { get; set; }
 		bool WasInProgress { get; set; }
-		bool SetupDone { get; set; }
 		int GameTriggerCount { get; set; }
 		Zone CurrentEntityZone { get; set; }
 		bool DeterminedPlayers { get; }
@@ -33,8 +30,9 @@ namespace Hearthstone_Deck_Tracker.LogReader.Interfaces
 		void Reset();
 		void SetCurrentEntity(int id);
 		void ResetCurrentEntity();
-		void BlockStart();
+		void BlockStart(string type, string cardId);
 		void BlockEnd();
 		Block CurrentBlock { get; }
+		Tuple<int, string> ChameleosReveal { get; set; }
 	}
 }

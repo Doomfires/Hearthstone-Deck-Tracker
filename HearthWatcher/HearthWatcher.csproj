@@ -66,6 +66,7 @@
     <Compile Include="EventArgs\CardPickedEventArgs.cs" />
     <Compile Include="EventArgs\ChoicesChangedEventArgs.cs" />
     <Compile Include="EventArgs\CompleteDeckEventArgs.cs" />
+    <Compile Include="EventArgs\DialogVisibilityEventArgs.cs" />
     <Compile Include="EventArgs\RewardsEventArgs.cs" />
     <Compile Include="HearthMirrorArenaProvider.cs" />
     <Compile Include="LogReader\LogLine.cs" />
@@ -76,6 +77,7 @@
     <Compile Include="PowerLogWatcher.cs" />
     <Compile Include="ProcessWatcher.cs" />
     <Compile Include="Providers\IArenaProvider.cs" />
+    <Compile Include="Providers\IFriendlyChallengeProvider.cs" />
     <Compile Include="Providers\IPackProvider.cs" />
     <Compile Include="EventArgs\PackEventArgs.cs" />
     <Compile Include="PackOpeningWatcher.cs" />

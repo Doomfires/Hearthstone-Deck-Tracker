@@ -109,7 +109,14 @@ namespace Hearthstone_Deck_Tracker.Windows
 		{
 			if(enable)
 			{
-				Show();
+				try
+				{
+					Show();
+				}
+				catch(InvalidOperationException e)
+				{
+					Log.Error(e);
+				}
 				if(User32.GetForegroundWindow() == new WindowInteropHelper(this).Handle)
 					User32.BringHsToForeground();
 			}
@@ -125,6 +132,8 @@ namespace Hearthstone_Deck_Tracker.Windows
 
 		private void SetRect(int top, int left, int width, int height)
 		{
+			if(width < 0 || height < 0)
+				return;
 			Top = top + _offsetY;
 			Left = left + _offsetX;
 			Width = (_customWidth == -1) ? width : _customWidth;
@@ -148,22 +157,19 @@ namespace Hearthstone_Deck_Tracker.Windows
 				LblPlayerTurnTime.Visibility =
 				LblOpponentTurnTime.Visibility = LblTurnTime.Visibility = Config.Instance.HideTimers ? Hidden : Visible;
 
-		public void ShowSecrets(bool force = false, HeroClass? heroClass = null)
+		public void ShowSecrets(List<Card> secrets, bool force = false)
 		{
 			if(Config.Instance.HideSecrets && !force)
 				return;
 
 			StackPanelSecrets.Children.Clear();
-			var secrets = heroClass == null ? _game.OpponentSecrets.GetSecrets() : _game.OpponentSecrets.GetDefaultSecrets(heroClass.Value);
-			foreach(var id in secrets)
+
+			foreach(var secret in secrets)
 			{
-				var count = id.AdjustedCount(_game);
-				if(count <= 0 && Config.Instance.RemoveSecretsFromList)
+				if(secret.Count <= 0 && Config.Instance.RemoveSecretsFromList)
 					continue;
-				var card = Database.GetCardFromId(id.CardId);
-				card.Count = count; 
 				var cardObj = new Controls.Card();
-				cardObj.SetValue(DataContextProperty, card);
+				cardObj.SetValue(DataContextProperty, secret);
 				StackPanelSecrets.Children.Add(cardObj);
 			}
 
@@ -171,6 +177,7 @@ namespace Hearthstone_Deck_Tracker.Windows
 		}
 
 		public void HideSecrets() => StackPanelSecrets.Visibility = Collapsed;
+		public void UnhideSecrects() => StackPanelSecrets.Visibility = Visible;
 
 		private void Window_Closing(object sender, CancelEventArgs e)
 		{

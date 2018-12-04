@@ -7,6 +7,7 @@ using System.IO;
 using System.Net;
 using System.Threading.Tasks;
 using System.Windows;
+using HearthMirror;
 using Hearthstone_Deck_Tracker.Controls.Stats;
 using Hearthstone_Deck_Tracker.Enums;
 using Hearthstone_Deck_Tracker.Hearthstone;
@@ -55,14 +56,18 @@ namespace Hearthstone_Deck_Tracker
 		internal static bool Update { get; set; }
 		internal static bool CanShutdown { get; set; }
 
+		internal static event Action<bool> GameIsRunningChanged;
+
+#pragma warning disable 1998
 		public static async void Initialize()
+#pragma warning restore 1998
 		{
 			LocalizeDictionary.Instance.Culture = CultureInfo.GetCultureInfo("en-US");
 			_startUpTime = DateTime.UtcNow;
-			Log.Info($"HDT: {Helper.GetCurrentVersion()}, Operating System: {Helper.GetWindowsVersion()}, .NET Framework: {Helper.GetInstalledDotNetVersion()}");
 			ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls12 | SecurityProtocolType.Tls11 | SecurityProtocolType.Tls;
 			Directory.SetCurrentDirectory(AppDomain.CurrentDomain.BaseDirectory);
 			Config.Load();
+			Log.Info($"HDT: {Helper.GetCurrentVersion()}, Operating System: {Helper.GetWindowsVersion()}, .NET Framework: {Helper.GetInstalledDotNetVersion()}");
 			var splashScreenWindow = new SplashScreenWindow();
 #if(SQUIRREL)
 			if(Config.Instance.CheckForUpdates)
@@ -78,15 +83,17 @@ namespace Hearthstone_Deck_Tracker
 #endif
 			splashScreenWindow.ShowConditional();
 			Log.Initialize();
+			Reflection.Exception += e => Log.Warn("HearthMirror Exception: " + e);
 			ConfigManager.Run();
 			LocUtil.UpdateCultureInfo();
 			var newUser = ConfigManager.PreviousVersion == null;
 			LogConfigUpdater.Run().Forget();
 			LogConfigWatcher.Start();
-			Helper.UpdateAppTheme();
+			UITheme.InitializeTheme().Forget();
 			ThemeManager.Run();
 			ResourceMonitor.Run();
 			Game = new GameV2();
+			Game.SecretsManager.OnSecretsChanged += cards => Overlay.ShowSecrets(cards);
 			MainWindow = new MainWindow();
 			MainWindow.LoadConfigSettings();
 			MainWindow.Show();
@@ -102,8 +109,11 @@ namespace Hearthstone_Deck_Tracker
 #endif
 				MainWindow.FlyoutUpdateNotes.IsOpen = true;
 				MainWindow.UpdateNotesControl.SetHighlight(ConfigManager.PreviousVersion);
+#if(SQUIRREL && !DEV)
+				if(Config.Instance.CheckForDevUpdates && !Config.Instance.AllowDevUpdates.HasValue)
+					MainWindow.ShowDevUpdatesMessage();
+#endif
 			}
-			NetDeck.CheckForChromeExtention();
 			DataIssueResolver.Run();
 
 #if(!SQUIRREL)
@@ -134,22 +144,29 @@ namespace Hearthstone_Deck_Tracker
 				MainWindow.ShowLogConfigUpdateFailedMessage().Forget();
 			else if(LogConfigUpdater.LogConfigUpdated && Game.IsRunning)
 			{
-				MainWindow.ShowMessageAsync("Hearthstone restart required", "The log.config file has been updated. HDT may not work properly until Hearthstone has been restarted.");
+				MainWindow.ShowMessageAsync("Hearthstone restart required", "The log.config file has been updated. HDT may not work properly until Hearthstone has been restarted.").Forget();
 				Overlay.ShowRestartRequiredWarning();
 			}
 			LogWatcherManger.Start(Game).Forget();
 
-			NewsManager.LoadNews();
+			RemoteConfig.Instance.Load();
 			HotKeyManager.Load();
 
 			if(Helper.HearthstoneDirExists && Config.Instance.StartHearthstoneWithHDT && !Game.IsRunning)
-				Helper.StartHearthstoneAsync().Forget();
+				HearthstoneRunner.StartHearthstone().Forget();
 
-			ApiWrapper.UpdateAccountStatus().Forget();
+			HSReplayNetHelper.UpdateAccount().Forget();
 
 			Initialized = true;
 
-			Influx.OnAppStart(Helper.GetCurrentVersion(), newUser, (int)(DateTime.UtcNow - _startUpTime).TotalSeconds);
+			Influx.OnAppStart(
+				Helper.GetCurrentVersion(),
+				newUser,
+				HSReplayNetOAuth.IsFullyAuthenticated,
+				HSReplayNetOAuth.AccountData?.IsPremium?.Equals("true", StringComparison.InvariantCultureIgnoreCase) ?? false,
+				(int)(DateTime.UtcNow - _startUpTime).TotalSeconds,
+				PluginManager.Instance.Plugins.Count
+			);
 		}
 
 		private static async void UpdateOverlayAsync()
@@ -159,7 +176,6 @@ namespace Hearthstone_Deck_Tracker
 				Updater.CheckForUpdates(true);
 #endif
 			var hsForegroundChanged = false;
-			var useNoDeckMenuItem = TrayIcon.NotifyIcon.ContextMenu.MenuItems.IndexOfKey("startHearthstone");
 			while(UpdateOverlay)
 			{
 				if(Config.Instance.CheckForUpdates)
@@ -169,6 +185,7 @@ namespace Hearthstone_Deck_Tracker
 					if(Game.CurrentRegion == Region.UNKNOWN)
 					{
 						//game started
+						Helper.VerifyHearthstonePath();
 						Game.CurrentRegion = await Helper.GetCurrentRegion();
 						if(Game.CurrentRegion != Region.UNKNOWN)
 						{
@@ -184,10 +201,10 @@ namespace Hearthstone_Deck_Tracker
 						Windows.CapturableOverlay?.UpdateContentVisibility();
 					}
 
-					MainWindow.BtnStartHearthstone.Visibility = Visibility.Collapsed;
-					TrayIcon.NotifyIcon.ContextMenu.MenuItems[useNoDeckMenuItem].Visible = false;
+					TrayIcon.MenuItemStartHearthstone.Visible = false;
 
 					Game.IsRunning = true;
+					GameIsRunningChanged?.Invoke(true);
 
 					Helper.GameWindowState = User32.GetHearthstoneWindowState();
 					Windows.CapturableOverlay?.Update();
@@ -222,7 +239,9 @@ namespace Hearthstone_Deck_Tracker
 				else if(Game.IsRunning)
 				{
 					Game.IsRunning = false;
+					GameIsRunningChanged?.Invoke(false);
 					Overlay.ShowOverlay(false);
+					Watchers.Stop();
 					if(Windows.CapturableOverlay != null)
 					{
 						Windows.CapturableOverlay.UpdateContentVisibility();
@@ -240,16 +259,11 @@ namespace Hearthstone_Deck_Tracker
 					Helper.ClearCachedHearthstoneBuild();
 					TurnTimer.Instance.Stop();
 
-					MainWindow.BtnStartHearthstone.Visibility = Visibility.Visible;
-					TrayIcon.NotifyIcon.ContextMenu.MenuItems[useNoDeckMenuItem].Visible = true;
+					TrayIcon.MenuItemStartHearthstone.Visible = true;
 
 					if(Config.Instance.CloseWithHearthstone)
 						MainWindow.Close();
 				}
-
-				if(Config.Instance.NetDeckClipboardCheck.HasValue && Config.Instance.NetDeckClipboardCheck.Value && Initialized
-				   && !User32.IsHearthstoneInForeground())
-					NetDeck.CheckForClipboardImport();
 
 				await Task.Delay(UpdateDelay);
 			}
@@ -269,10 +283,7 @@ namespace Hearthstone_Deck_Tracker
 			var stoppedReader = await LogWatcherManger.Stop();
 			Game.Reset();
 			if(DeckList.Instance.ActiveDeck != null)
-			{
 				Game.IsUsingPremade = true;
-				MainWindow.UpdateMenuItemVisibility();
-			}
 			await Task.Delay(1000);
 			if(stoppedReader)
 				LogWatcherManger.Start(Game).Forget();
@@ -322,7 +333,6 @@ namespace Hearthstone_Deck_Tracker
 			public static CapturableOverlayWindow CapturableOverlay;
 		}
 
-		//Todo: keep this state somewhere tlse
-		internal static int GetTurnNumber() => LogWatcherManger.GetTurnNumber();
+		internal static bool StatsOverviewInitialized => _statsOverview != null;
 	}
 }

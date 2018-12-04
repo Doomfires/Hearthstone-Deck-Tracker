@@ -36,6 +36,14 @@ namespace Hearthstone_Deck_Tracker.Stats.CompiledStats
 
 		public int PacksCountUngoro => GetFilteredRuns().Sum(x => x.Packs.Count(p => p == ArenaRewardPacks.JourneyToUngoro));
 
+		public int PacksCountIcecrown => GetFilteredRuns().Sum(x => x.Packs.Count(p => p == ArenaRewardPacks.KnightsOfTheFrozenThrone));
+
+		public int PacksCountLoot => GetFilteredRuns().Sum(x => x.Packs.Count(p => p == ArenaRewardPacks.Loot));
+
+		public int PacksCountGilneas => GetFilteredRuns().Sum(x => x.Packs.Count(p => p == ArenaRewardPacks.Gilneas));
+
+		public int PacksCountBoomsday => GetFilteredRuns().Sum(x => x.Packs.Count(p => p == ArenaRewardPacks.Boomsday));
+
 		public int PacksCountTotal => GetFilteredRuns().Sum(x => x.PackCount);
 
 		public double PacksCountAveragePerRun => Math.Round(GetFilteredRuns(requireAnyReward: true).Select(x => x.PackCount).DefaultIfEmpty(0).Average(), 2);
@@ -250,7 +258,7 @@ namespace Hearthstone_Deck_Tracker.Stats.CompiledStats
 						}
 						break;
 					case DisplayedTimeFrame.ThisWeek:
-						filtered = filtered.Where(g => g.StartTime > DateTime.Today.AddDays(-(int)DateTime.Today.DayOfWeek + 1));
+						filtered = filtered.Where(g => g.StartTime > DateTimeHelper.StartOfWeek);
 						break;
 					case DisplayedTimeFrame.Today:
 						filtered = filtered.Where(g => g.StartTime > DateTime.Today);
@@ -318,6 +326,9 @@ namespace Hearthstone_Deck_Tracker.Stats.CompiledStats
 			OnPropertyChanged(nameof(PacksCountTgt));
 			OnPropertyChanged(nameof(PacksCountWotog));
 			OnPropertyChanged(nameof(PacksCountMsg));
+			OnPropertyChanged(nameof(PacksCountUngoro));
+			OnPropertyChanged(nameof(PacksCountIcecrown));
+			OnPropertyChanged(nameof(PacksCountLoot));
 			OnPropertyChanged(nameof(PacksCountTotal));
 			OnPropertyChanged(nameof(PacksCountAveragePerRun));
 			OnPropertyChanged(nameof(CardCountTotal));

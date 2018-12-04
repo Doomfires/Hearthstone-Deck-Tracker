@@ -15,8 +15,10 @@ using HearthDb.Enums;
 using HearthMirror.Objects;
 using Hearthstone_Deck_Tracker.Annotations;
 using Hearthstone_Deck_Tracker.Enums;
+using Hearthstone_Deck_Tracker.Hearthstone;
 using Hearthstone_Deck_Tracker.HsReplay;
 using Hearthstone_Deck_Tracker.HsReplay.Utility;
+using Hearthstone_Deck_Tracker.Properties;
 using Hearthstone_Deck_Tracker.Utility;
 using Hearthstone_Deck_Tracker.Utility.Logging;
 using Card = Hearthstone_Deck_Tracker.Hearthstone.Card;
@@ -227,6 +229,8 @@ namespace Hearthstone_Deck_Tracker.Stats
 
 		public int BrawlLosses { get; set; }
 
+		public string OpponentHeroCardId { get; set; }
+
 		public Region Region
 		{
 			get { return _region; }
@@ -348,24 +352,10 @@ namespace Hearthstone_Deck_Tracker.Stats
 		public bool CanSelectDeck => DeckList.Instance.Decks.Any(d => d.DeckId == DeckId);
 
 		[XmlIgnore]
-		public BitmapImage OpponentHeroImage
-		{
-			get
-			{
-				HeroClassAll oppHero;
-				return Enum.TryParse(OpponentHero, out oppHero) ? ImageCache.GetClassIcon(oppHero) : new BitmapImage();
-			}
-		}
+		public BitmapImage OpponentHeroImage => Enum.TryParse(OpponentHero, out HeroClassAll oppHero) ? ImageCache.GetClassIcon(oppHero) : new BitmapImage();
 
 		[XmlIgnore]
-		public BitmapImage PlayerHeroImage
-		{
-			get
-			{
-				HeroClassAll playerHero;
-				return Enum.TryParse(PlayerHero, out playerHero) ? ImageCache.GetClassIcon(playerHero) : new BitmapImage();
-			}
-		}
+		public BitmapImage PlayerHeroImage => Enum.TryParse(PlayerHero, out HeroClassAll playerHero) ? ImageCache.GetClassIcon(playerHero) : new BitmapImage();
 
 		[XmlIgnore]
 		public string Duration => (EndTime - StartTime).Minutes + " min";
@@ -374,10 +364,13 @@ namespace Hearthstone_Deck_Tracker.Stats
 		public int SortableDuration => (EndTime - StartTime).Minutes;
 
 		[XmlIgnore]
+		public string Age => LocUtil.GetAge(StartTime);
+
+		[XmlIgnore]
 		public string GotCoin
 		{
-			get { return Coin ? "Yes" : "No"; }
-			set { Coin = value.ToLower() == "Yes"; }
+			get { return Coin ? LocUtil.Get(nameof(Strings.Enum_YesNo_Yes)) : LocUtil.Get(nameof(Strings.Enum_YesNo_No)); }
+			set { Coin = value == LocUtil.Get(nameof(Strings.Enum_YesNo_Yes)); }
 		}
 
 		public HsReplayInfo HsReplay { get; set; } = new HsReplayInfo();
@@ -441,6 +434,12 @@ namespace Hearthstone_Deck_Tracker.Stats
 		[XmlArray(ElementName = "OpponentCards")]
 		[XmlArrayItem(ElementName = "Card")]
 		public List<TrackedCard> OpponentCards { get; set; } = new List<TrackedCard>();
+
+		public string VersusLabel => LocUtil.Get("DeckCharts_Replays_Label_Vs");
+		public string UploadedTooltip => LocUtil.Get("DeckCharts_Tooltip_Uploaded");
+		public string NoReplayDataTooltip => LocUtil.Get("DeckCharts_Tooltip_NoReplayData");
+
+		public bool IsDungeonMatch => GameType == GameType.GT_VS_AI && DungeonRun.IsDungeonBoss(OpponentHeroCardId);
 
 		public void SetPlayerCards(Deck deck, List<Card> revealedCards) => SetPlayerCards(deck?.Cards, revealedCards);
 

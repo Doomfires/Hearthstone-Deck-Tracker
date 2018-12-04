@@ -13,6 +13,7 @@ using Hearthstone_Deck_Tracker.Hearthstone;
 using Hearthstone_Deck_Tracker.Hearthstone.Entities;
 using Hearthstone_Deck_Tracker.HsReplay;
 using Hearthstone_Deck_Tracker.Importing;
+using Hearthstone_Deck_Tracker.Live;
 using Hearthstone_Deck_Tracker.Replay;
 using Hearthstone_Deck_Tracker.Stats;
 using Hearthstone_Deck_Tracker.Stats.CompiledStats;
@@ -24,7 +25,6 @@ using Hearthstone_Deck_Tracker.Windows;
 using HSReplay.LogValidation;
 using static Hearthstone_Deck_Tracker.Enums.GameMode;
 using static HearthDb.Enums.GameTag;
-using static Hearthstone_Deck_Tracker.Hearthstone.CardIds.Secrets;
 
 #endregion
 
@@ -32,15 +32,11 @@ namespace Hearthstone_Deck_Tracker
 {
 	public class GameEventHandler : IGameHandler
 	{
-		private const int AvengeDelay = 50;
 		private readonly GameV2 _game;
 		private ArenaRewardDialog _arenaRewardDialog;
 		private Deck _assignedDeck;
 
 		private Entity _attackingEntity;
-		private int _avengeDeathRattleCount;
-
-		private bool _awaitingAvenge;
 		private Entity _defendingEntity;
 		private bool _handledGameEnd;
 		private GameStats _lastGame;
@@ -76,6 +72,12 @@ namespace Hearthstone_Deck_Tracker
 			if(_game.IsInMenu)
 				return;
 
+			if(!_handledGameEnd)
+			{
+				Log.Warn("Game end has not been handled");
+				HandleGameEnd();
+			}
+
 			Log.Info("Game is now in menu.");
 			_game.IsInMenu = true;
 
@@ -109,7 +111,7 @@ namespace Hearthstone_Deck_Tracker
 			if(!_game.IsUsingPremade)
 				_game.DrawnLastGame =
 					new List<Card>(_game.Player.RevealedEntities.Where(x => !x.Info.Created && !x.Info.Stolen && x.Card.Collectible 
-									&& (x.IsMinion || x.IsSpell || x.IsWeapon)).GroupBy(x => x.CardId).Select(x =>
+									&& x.IsPlayableCard).GroupBy(x => x.CardId).Select(x =>
 					{
 						var card = Database.GetCardFromId(x.Key);
 						card.Count = x.Count();
@@ -191,7 +193,7 @@ namespace Hearthstone_Deck_Tracker
 			if(_attackingEntity == null || _defendingEntity == null)
 				return;
 			if(entity.IsControlledBy(_game.Player.Id))
-				_game.OpponentSecrets.ZeroFromAttack(_attackingEntity, _defendingEntity);
+				_game.SecretsManager.HandleAttack(_attackingEntity, _defendingEntity);
 			OnAttackEvent();
 		}
 
@@ -201,7 +203,7 @@ namespace Hearthstone_Deck_Tracker
 			if(_attackingEntity == null || _defendingEntity == null)
 				return;
 			if(entity.IsControlledBy(_game.Opponent.Id))
-				_game.OpponentSecrets.ZeroFromAttack(_attackingEntity, _defendingEntity);
+				_game.SecretsManager.HandleAttack(_attackingEntity, _defendingEntity);
 			OnAttackEvent();
 		}
 
@@ -214,85 +216,20 @@ namespace Hearthstone_Deck_Tracker
 				GameEvents.OnOpponentMinionAttack.Execute(attackInfo);
 		}
 
-		public void HandlePlayerMinionPlayed()
+		public void HandlePlayerMinionPlayed(Entity entity)
 		{
-			if(!Config.Instance.AutoGrayoutSecrets)
-				return;
-
-			//Hidden cache will only trigger if the opponent has a minion in hand. 
-			//We might not know this for certain - requires additional tracking logic.
-			//TODO: _game.OpponentSecrets.SetZero(Hunter.HiddenCache);
-			_game.OpponentSecrets.SetZero(Hunter.Snipe);
-			_game.OpponentSecrets.SetZero(Mage.MirrorEntity);
-			_game.OpponentSecrets.SetZero(Mage.PotionOfPolymorph);
-			_game.OpponentSecrets.SetZero(Paladin.Repentance);
-
-			if(Core.MainWindow != null)
-				Core.Overlay.ShowSecrets();
+			_game.SecretsManager.HandleMinionPlayed(entity);
 		}
 
 		public void HandleOpponentMinionDeath(Entity entity, int turn)
 		{
-			if(!Config.Instance.AutoGrayoutSecrets)
-				return;
-
-			if(_game.Opponent.HandCount < 10)
-			{
-				_game.OpponentSecrets.SetZero(Mage.Duplicate);
-				_game.OpponentSecrets.SetZero(Paladin.GetawayKodo);
-			}
-
-			var numDeathrattleMinions = 0;
-
-			if(entity.IsActiveDeathrattle)
-			{
-				if(!CardIds.DeathrattleSummonCardIds.TryGetValue(entity.CardId ?? "", out numDeathrattleMinions))
-				{
-					if(entity.CardId == HearthDb.CardIds.Collectible.Neutral.Stalagg
-					   && _game.Opponent.Graveyard.Any(x => x.CardId == HearthDb.CardIds.Collectible.Neutral.Feugen)
-					   || entity.CardId == HearthDb.CardIds.Collectible.Neutral.Feugen
-					   && _game.Opponent.Graveyard.Any(x => x.CardId == HearthDb.CardIds.Collectible.Neutral.Stalagg))
-						numDeathrattleMinions = 1;
-				}
-				if(
-					_game.Entities.Any(
-					                   x =>
-					                   x.Value.CardId == HearthDb.CardIds.NonCollectible.Druid.SouloftheForest_SoulOfTheForestEnchantment
-					                   && x.Value.GetTag(ATTACHED) == entity.Id))
-					numDeathrattleMinions++;
-				if(
-					_game.Entities.Any(
-					                   x =>
-					                   x.Value.CardId == HearthDb.CardIds.NonCollectible.Shaman.AncestralSpirit_AncestralSpiritEnchantment
-					                   && x.Value.GetTag(ATTACHED) == entity.Id))
-					numDeathrattleMinions++;
-			}
-
-			if(_game.OpponentEntity != null && _game.OpponentEntity.HasTag(EXTRA_DEATHRATTLES))
-				numDeathrattleMinions *= (_game.OpponentEntity.GetTag(EXTRA_DEATHRATTLES) + 1);
-
-			HandleAvengeAsync(numDeathrattleMinions);
-
-			// redemption never triggers if a deathrattle effect fills up the board
-			// effigy can trigger ahead of the deathrattle effect, but only if effigy was played before the deathrattle minion
-			if(_game.OpponentMinionCount < 7 - numDeathrattleMinions)
-			{
-				_game.OpponentSecrets.SetZero(Paladin.Redemption);
-				_game.OpponentSecrets.SetZero(Mage.Effigy);
-			}
-			else
-			{
-				// todo: need to properly break ties when effigy + deathrattle played in same turn
-				var minionTurnPlayed = turn - entity.GetTag(NUM_TURNS_IN_PLAY);
-				var secret = _game.OpponentSecrets.Secrets.FirstOrDefault(x => x.TurnPlayed >= minionTurnPlayed);
-				var secretOffset = secret != null ? _game.OpponentSecrets.Secrets.IndexOf(secret) : 0;
-				_game.OpponentSecrets.SetZeroOlder(Mage.Effigy, secretOffset);
-			}
-
-			if(Core.MainWindow != null)
-				Core.Overlay.ShowSecrets();
+			_game.SecretsManager.HandleOpponentMinionDeath(entity);
 		}
 
+		public void HandlePlayerMinionDeath(Entity entity)
+		{
+			_game.SecretsManager.HandlePlayerMinionDeath(entity);
+		}
 
 		public void HandleEntityPredamage(Entity entity, int value)
 		{
@@ -303,16 +240,9 @@ namespace Hearthstone_Deck_Tracker
 
 		public void HandleOpponentDamage(Entity entity)
 		{
-			if(!Config.Instance.AutoGrayoutSecrets)
-				return;
-			if(!entity.IsHero || !entity.IsControlledBy(_game.Opponent.Id))
-				return;
-			_game.OpponentSecrets.SetZero(Paladin.EyeForAnEye);
-			if(Core.MainWindow != null)
-				Core.Overlay.ShowSecrets();
+			_game.SecretsManager.HandleOpponentDamage(entity);
 		}
 
-		private int _lastCompetitiveSpiritCheck;
 		private readonly int[] _lastTurnStart = new int[2];
 		public void HandleTurnsInPlayChange(Entity entity, int turn)
 		{
@@ -327,28 +257,26 @@ namespace Hearthstone_Deck_Tracker
 				TurnStart(player, turn);
 				return;
 			}
-			if(turn <= _lastCompetitiveSpiritCheck || !Config.Instance.AutoGrayoutSecrets || !entity.IsMinion 
-				|| !entity.IsControlledBy(_game.Opponent.Id) || !_game.OpponentEntity.IsCurrentPlayer)
-				return;
-			_lastCompetitiveSpiritCheck = turn;
-			_game.OpponentSecrets.SetZero(Paladin.CompetitiveSpirit);
-			if(Core.MainWindow != null)
-				Core.Overlay.ShowSecrets();
+			_game.SecretsManager.HandleTurnsInPlayChange(entity, turn);
 		}
 
-		public void SetOpponentHero(string hero)
+		public void SetOpponentHero(string cardId)
 		{
+			var hero = Database.GetHeroNameFromId(cardId);
 			if(string.IsNullOrEmpty(hero))
 				return;
 			_game.Opponent.Class = hero;
-
 			if(_game.CurrentGameStats != null)
+			{
 				_game.CurrentGameStats.OpponentHero = hero;
+				_game.CurrentGameStats.OpponentHeroCardId = cardId;
+			}
 			Log.Info("Opponent=" + hero);
 		}
 
-		public void SetPlayerHero(string hero)
+		public void SetPlayerHero(string cardId)
 		{
+			var hero = Database.GetHeroNameFromId(cardId);
 			if(string.IsNullOrEmpty(hero))
 				return;
 			_game.Player.Class = hero;
@@ -376,18 +304,25 @@ namespace Hearthstone_Deck_Tracker
 			var player = turn.Item1;
 			Log.Info($"--- {player} turn {turn.Item2} ---");
 			if(player == ActivePlayer.Player)
+			{
 				HandleThaurissanCostReduction();
+				_game.SecretsManager.HandleTurnStart();
+			}
 			GameEvents.OnTurnStart.Execute(player);
 			if(_turnQueue.Count > 0)
 				return;
 			TurnTimer.Instance.SetPlayer(player);
 			if(player == ActivePlayer.Player && !_game.IsInMenu)
 			{
-				if(Config.Instance.FlashHsOnTurnStart)
-					User32.FlashHs();
-
-				if(Config.Instance.BringHsToForeground)
-					User32.BringHsToForeground();
+				switch(Config.Instance.TurnStartAction)
+				{
+						case HsActionType.Flash:
+							User32.FlashHs();
+							break;
+						case HsActionType.Popup:
+							User32.BringHsToForeground();
+							break;
+				}
 			}
 		}
 
@@ -401,29 +336,11 @@ namespace Hearthstone_Deck_Tracker
 				card.Info.CostReduction += thaurissans.Count;
 		}
 
-		public async void HandleAvengeAsync(int deathRattleCount)
-		{
-			_avengeDeathRattleCount += deathRattleCount;
-			if(_awaitingAvenge)
-				return;
-			_awaitingAvenge = true;
-			if(_game.OpponentMinionCount != 0)
-			{
-				await _game.GameTime.WaitForDuration(AvengeDelay);
-				if(_game.OpponentMinionCount - _avengeDeathRattleCount > 0)
-				{
-					_game.OpponentSecrets.SetZero(Paladin.Avenge);
-					if (Core.MainWindow != null)
-						Core.Overlay.ShowSecrets();
-				}
-			}
-			_awaitingAvenge = false;
-			_avengeDeathRattleCount = 0;
-		}
-
 		private DateTime _lastGameStartTimestamp = DateTime.MinValue;
 		public void HandleGameStart(DateTime timestamp)
 		{
+			_game.InvalidateMatchInfoCache();
+			Reflection.Reinitialize();
 			if(_game.CurrentGameMode == Practice && !_game.IsInMenu && !_handledGameEnd
 				&& _lastGameStartTimestamp  > DateTime.MinValue && timestamp > _lastGameStartTimestamp)
 				HandleAdventureRestart();
@@ -434,12 +351,16 @@ namespace Hearthstone_Deck_Tracker
 			_lastGameStart = DateTime.Now;
 			Log.Info("--- Game start ---");
 
-			if(Config.Instance.FlashHsOnTurnStart)
-				User32.FlashHs();
-			if(Config.Instance.BringHsToForeground)
-				User32.BringHsToForeground();
+			switch(Config.Instance.TurnStartAction)
+			{
+				case HsActionType.Flash:
+					User32.FlashHs();
+					break;
+				case HsActionType.Popup:
+					User32.BringHsToForeground();
+					break;
+			}
 			_lastTurnStart[0] = _lastTurnStart[1] = 0;
-			_lastCompetitiveSpiritCheck = 0;
 			_arenaRewardDialog = null;
 			_showedNoteDialog = false;
 			_game.IsInMenu = false;
@@ -449,15 +370,6 @@ namespace Hearthstone_Deck_Tracker
 			_game.CacheGameType();
 			_game.CacheSpectator();
 			_game.MetaData.ServerInfo = Reflection.GetServerInfo();
-			if(!string.IsNullOrEmpty(_game.MetaData.ServerInfo?.Address))
-			{
-				var region = Helper.GetRegionByServerIp(_game.MetaData.ServerInfo.Address);
-				if(_game.CurrentRegion == Region.UNKNOWN || region == Region.CHINA)
-				{
-					_game.CurrentRegion = region;
-					Log.Info("Set current region to" + region);
-				}
-			}
 			TurnTimer.Instance.Start(_game).Forget();
 
 			var selectedDeck = DeckList.Instance.ActiveDeckVersion;
@@ -466,6 +378,7 @@ namespace Hearthstone_Deck_Tracker
 				_game.IsUsingPremade = true;
 			Core.Windows.CapturableOverlay?.UpdateContentVisibility();
 			GameEvents.OnGameStart.Execute();
+			LiveDataManager.WatchBoardState();
 		}
 
 		private void HandleAdventureRestart()
@@ -492,6 +405,7 @@ namespace Hearthstone_Deck_Tracker
 				TurnTimer.Instance.Stop();
 				Core.Overlay.HideTimers();
 				DeckManager.ResetAutoSelectCount();
+				LiveDataManager.Stop();
 				Log.Info("Game ended...");
 				_game.InvalidateMatchInfoCache();
 				if(_game.CurrentGameMode == Spectator && _game.CurrentGameStats.Result == GameResult.None)
@@ -511,7 +425,7 @@ namespace Hearthstone_Deck_Tracker
 				else
 					_game.CurrentGameStats.OpponentName = _game.CurrentGameStats.OpponentHero;
 
-				_game.CurrentGameStats.Turns = Core.GetTurnNumber();
+				_game.CurrentGameStats.Turns = _game.GetTurnNumber();
 				if(Config.Instance.DiscardZeroTurnGame && _game.CurrentGameStats.Turns < 1)
 				{
 					Log.Info("Game has 0 turns, discarded. (DiscardZeroTurnGame)");
@@ -549,15 +463,18 @@ namespace Hearthstone_Deck_Tracker
 				_game.CurrentGameStats.ScenarioId = _game.MatchInfo?.MissionId ?? 0;
 				_game.CurrentGameStats.BrawlSeasonId = _game.MatchInfo?.BrawlSeasonId ?? 0;
 				_game.CurrentGameStats.RankedSeasonId = _game.MatchInfo?.RankedSeasonId ?? 0;
+				var confirmedCards = _game.Player.RevealedCards.Where(x => x.Collectible)
+					.Concat(_game.Player.KnownCardsInDeck.Where(x => x.Collectible && !x.IsCreated))
+					.ToList();
 				if(_game.CurrentSelectedDeck != null && _game.CurrentSelectedDeck.Id > 0)
 				{
 					_game.CurrentGameStats.HsDeckId = _game.CurrentSelectedDeck.Id;
-					_game.CurrentGameStats.SetPlayerCards(_game.CurrentSelectedDeck, _game.Player.RevealedCards.Where(x => x.Collectible).ToList());
+					_game.CurrentGameStats.SetPlayerCards(_game.CurrentSelectedDeck, confirmedCards);
 				}
 				else
 				{
 					_game.CurrentGameStats.HsDeckId = DeckList.Instance.ActiveDeckVersion?.HsId ?? 0;
-					_game.CurrentGameStats.SetPlayerCards(DeckList.Instance.ActiveDeckVersion, _game.Player.RevealedCards.Where(x => x.Collectible).ToList());
+					_game.CurrentGameStats.SetPlayerCards(DeckList.Instance.ActiveDeckVersion, confirmedCards);
 				}
 				_game.CurrentGameStats.SetOpponentCards(_game.Opponent.OpponentCardList.Where(x => !x.IsCreated).ToList());
 				_game.CurrentGameStats.GameEnd();
@@ -568,7 +485,7 @@ namespace Hearthstone_Deck_Tracker
 				{
 					var revealed = _game.Player.RevealedEntities.Where(x => x != null).ToList();
 					if(Config.Instance.DiscardGameIfIncorrectDeck
-					   && !revealed.Where(x => (x.IsMinion || x.IsSpell || x.IsWeapon) && !x.Info.Created && !x.Info.Stolen && x.Card.Collectible)
+					   && !revealed.Where(x => x.IsPlayableCard && !x.Info.Created && !x.Info.Stolen && x.Card.Collectible)
 					   .GroupBy(x => x.CardId).All(x => selectedDeck.GetSelectedDeckVersion().Cards.Any(c2 => x.Key == c2.Id && x.Count() <= c2.Count)))
 					{
 						if(Config.Instance.AskBeforeDiscardingGame)
@@ -721,7 +638,7 @@ namespace Hearthstone_Deck_Tracker
 
 				if(_game.CurrentGameStats != null)
 				{
-					_game.CurrentGameStats.Turns = Core.GetTurnNumber();
+					_game.CurrentGameStats.Turns = _game.GetTurnNumber();
 					if(Config.Instance.DiscardZeroTurnGame && _game.CurrentGameStats.Turns < 1)
 					{
 						Log.Info("Game has 0 turns, discarded. (DiscardZeroTurnGame)");
@@ -776,14 +693,8 @@ namespace Hearthstone_Deck_Tracker
 		public void HandlePlayerHeroPower(string cardId, int turn)
 		{
 			LogEvent("PlayerHeroPower", cardId, turn);
+			_game.SecretsManager.HandleHeroPower();
 			GameEvents.OnPlayerHeroPower.Execute();
-
-			if(!Config.Instance.AutoGrayoutSecrets)
-				return;
-			_game.OpponentSecrets.SetZero(Hunter.DartTrap);
-
-			if(Core.MainWindow != null)
-				Core.Overlay.ShowSecrets();
 		}
 
 		public void HandleOpponentHeroPower(string cardId, int turn)
@@ -880,7 +791,7 @@ namespace Hearthstone_Deck_Tracker
 					break;
 				case Zone.HAND:
 					_game.Player.SecretPlayedFromHand(entity, turn);
-					HandleSecretsOnPlay(entity);
+					_game.SecretsManager.HandleCardPlayed(entity);
 					break;
 				default:
 					_game.Player.CreateInSecret(entity, turn);
@@ -906,40 +817,7 @@ namespace Hearthstone_Deck_Tracker
 			_game.Player.Play(entity, turn);
 			Core.UpdatePlayerCards();
 			GameEvents.OnPlayerPlay.Execute(Database.GetCardFromId(cardId));
-			HandleSecretsOnPlay(entity);
-		}
-
-		public async void HandleSecretsOnPlay(Entity entity)
-		{
-			if(!Config.Instance.AutoGrayoutSecrets)
-				return;
-			if(entity.IsSpell)
-			{
-				_game.OpponentSecrets.SetZero(Mage.Counterspell);
-
-				if (_game.OpponentHandCount < 10)
-					_game.OpponentSecrets.SetZero(Mage.ManaBind);
-
-				if(_game.OpponentMinionCount < 7)
-				{
-					//CARD_TARGET is set after ZONE, wait for 50ms gametime before checking
-					await _game.GameTime.WaitForDuration(50);
-					Entity target;
-					if(entity.HasTag(CARD_TARGET) && _game.Entities.TryGetValue(entity.GetTag(CARD_TARGET), out target) && target.IsMinion)
-						_game.OpponentSecrets.SetZero(Mage.Spellbender);
-					_game.OpponentSecrets.SetZero(Hunter.CatTrick);
-				}
-
-				if(Core.MainWindow != null)
-					Core.Overlay.ShowSecrets();
-			}
-			else if(entity.IsMinion && _game.PlayerMinionCount > 3)
-			{
-				_game.OpponentSecrets.SetZero(Paladin.SacredTrial);
-
-				if(Core.MainWindow != null)
-					Core.Overlay.ShowSecrets();
-			}
+			_game.SecretsManager.HandleCardPlayed(entity);
 		}
 
 		public void HandlePlayerDeckDiscard(Entity entity, string cardId, int turn)
@@ -977,10 +855,12 @@ namespace Hearthstone_Deck_Tracker
 
 		public void HandleOpponentCreateInSetAside(Entity entity, int turn) => _game.Opponent.CreateInSetAside(entity, turn);
 
-		public void HandlePlayerPlayToGraveyard(Entity entity, string cardId, int turn)
+		public void HandlePlayerPlayToGraveyard(Entity entity, string cardId, int turn, bool playersTurn)
 		{
 			_game.Player.PlayToGraveyard(entity, cardId, turn);
 			GameEvents.OnPlayerPlayToGraveyard.Execute((Card)entity.Card.Clone());
+			if(playersTurn && entity.IsMinion)
+				HandlePlayerMinionDeath(entity);
 		}
 
 		public void HandleOpponentPlayToGraveyard(Entity entity, string cardId, int turn, bool playersTurn)
@@ -1001,6 +881,12 @@ namespace Hearthstone_Deck_Tracker
 		{
 			_game.Opponent.CreateInPlay(entity, turn);
 			GameEvents.OnOpponentCreateInPlay.Execute(Database.GetCardFromId(cardId));
+		}
+
+		public void HandleChameleosReveal(string cardId)
+		{
+			_game.Opponent.ChameleosReveal(cardId);
+			Core.UpdateOpponentCards();
 		}
 
 		public void HandlePlayerJoust(Entity entity, string cardId, int turn)
@@ -1059,9 +945,7 @@ namespace Hearthstone_Deck_Tracker
 					if(!Enum.TryParse(_game.Opponent.Class, out heroClass))
 						return;
 				}
-				_game.OpponentSecretCount++;
-				_game.OpponentSecrets.NewSecretPlayed(heroClass, entity.Id, turn, cardId);
-				Core.Overlay.ShowSecrets();
+				_game.SecretsManager.NewSecret(entity);
 			}
 		}
 
@@ -1071,16 +955,7 @@ namespace Hearthstone_Deck_Tracker
 			_game.Player.StolenFromOpponent(entity, turn);
 			if(entity.IsSecret)
 			{
-				_game.OpponentSecretCount--;
-				_game.OpponentSecrets.SecretRemoved(entity.Id, cardId);
-				if(_game.OpponentSecretCount <= 0)
-					Core.Overlay.HideSecrets();
-				else
-				{
-					if(Config.Instance.AutoGrayoutSecrets)
-						_game.OpponentSecrets.SetZero(cardId);
-					Core.Overlay.ShowSecrets();
-				}
+				_game.SecretsManager.RemoveSecret(entity);
 				Core.UpdateOpponentCards();
 				GameEvents.OnOpponentSecretTriggered.Execute(Database.GetCardFromId(cardId));
 			}
@@ -1140,7 +1015,6 @@ namespace Hearthstone_Deck_Tracker
 				}
 				return;
 			}
-			_game.OpponentSecretCount++;
 			switch(fromZone)
 			{
 				case Zone.DECK:
@@ -1164,11 +1038,7 @@ namespace Hearthstone_Deck_Tracker
 			}
 			else if(!Enum.TryParse(_game.Opponent.Class, out heroClass))
 				return;
-			
-			_game.OpponentSecrets.NewSecretPlayed(heroClass, otherId, turn);
-
-			if(Core.MainWindow != null)
-				Core.Overlay.ShowSecrets();
+			_game.SecretsManager.NewSecret(entity);
 			GameEvents.OnOpponentPlay.Execute(Database.GetCardFromId(cardId));
 		}
 
@@ -1192,17 +1062,7 @@ namespace Hearthstone_Deck_Tracker
 			if (!entity.IsSecret)
 				return;
 			_game.Opponent.SecretTriggered(entity, turn);
-			_game.OpponentSecretCount--;
-			_game.OpponentSecrets.SecretRemoved(otherId, cardId);
-
-			if(_game.OpponentSecretCount <= 0)
-				Core.Overlay.HideSecrets();
-			else
-			{
-				if(Config.Instance.AutoGrayoutSecrets)
-					_game.OpponentSecrets.SetZero(cardId);
-				Core.Overlay.ShowSecrets();
-			}
+			_game.SecretsManager.RemoveSecret(entity);
 			Core.UpdateOpponentCards();
 			GameEvents.OnOpponentSecretTriggered.Execute(Database.GetCardFromId(cardId));
 		}
@@ -1238,8 +1098,8 @@ namespace Hearthstone_Deck_Tracker
 		void IGameHandler.HandleOpponentPlayToHand(Entity entity, string cardId, int turn, int id) => HandleOpponentPlayToHand(entity, cardId, turn, id);
 		void IGameHandler.HandleOpponentSecretTrigger(Entity entity, string cardId, int turn, int otherId) => HandleOpponentSecretTrigger(entity, cardId, turn, otherId);
 		void IGameHandler.HandleOpponentDeckDiscard(Entity entity, string cardId, int turn) => HandleOpponentDeckDiscard(entity, cardId, turn);
-		void IGameHandler.SetOpponentHero(string hero) => SetOpponentHero(hero);
-		void IGameHandler.SetPlayerHero(string hero) => SetPlayerHero(hero);
+		void IGameHandler.SetOpponentHero(string cardId) => SetOpponentHero(cardId);
+		void IGameHandler.SetPlayerHero(string cardId) => SetPlayerHero(cardId);
 		void IGameHandler.HandleOpponentHeroPower(string cardId, int turn) => HandleOpponentHeroPower(cardId, turn);
 		void IGameHandler.TurnStart(ActivePlayer player, int turnNumber) => TurnStart(player, turnNumber);
 		void IGameHandler.HandleGameStart(DateTime timestamp) => HandleGameStart(timestamp);

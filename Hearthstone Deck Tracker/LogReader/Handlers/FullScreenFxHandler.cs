@@ -2,6 +2,7 @@
 
 using System;
 using System.Linq;
+using System.Threading.Tasks;
 using HearthMirror;
 using Hearthstone_Deck_Tracker.Enums.Hearthstone;
 using Hearthstone_Deck_Tracker.Hearthstone;
@@ -33,12 +34,12 @@ namespace Hearthstone_Deck_Tracker.LogReader.Handlers
 				else
 				{
 					var selectedId = GetSelectedDeckId(game.CurrentMode);
-					game.CurrentSelectedDeck = selectedId > 0 ? Reflection.GetDecks().FirstOrDefault(deck => deck.Id == selectedId) : null;
+					game.CurrentSelectedDeck = selectedId > 0 ? Reflection.GetDecks()?.FirstOrDefault(deck => deck.Id == selectedId) : null;
 				}
 				if(!Config.Instance.AutoDeckDetection)
 					return;
 				if(new[] {TOURNAMENT, FRIENDLY, ADVENTURE, TAVERN_BRAWL}.Contains(game.CurrentMode))
-					AutoSelectDeckById(game.CurrentMode);
+					DeckManager.AutoSelectDeckById(game, GetSelectedDeckId(game.CurrentMode));
 				else if(game.CurrentMode == DRAFT)
 					AutoSelectArenaDeck();
 			}
@@ -67,41 +68,6 @@ namespace Hearthstone_Deck_Tracker.LogReader.Handlers
 			if(mode != TAVERN_BRAWL)
 				return 0;
 			return Reflection.GetEditedDeck()?.Id ?? 0;
-		}
-
-		private static void AutoSelectDeckById(Mode mode)
-		{
-			var selectedDeckId = GetSelectedDeckId(mode);
-			if(selectedDeckId <= 0)
-			{
-				Log.Info("No selected deck found, using no-deck mode");
-				Core.MainWindow.SelectDeck(null, true);
-				return;
-			}
-			DeckManager.AutoImportConstructed(false, mode == TAVERN_BRAWL);
-			var selectedDeck = DeckList.Instance.Decks.FirstOrDefault(x => x.HsId == selectedDeckId);
-			if(selectedDeck == null)
-			{
-				Log.Warn($"No deck with id={selectedDeckId} found");
-				return;
-			}
-			Log.Info("Found selected deck: " + selectedDeck.Name);
-			var hsDeck = DeckImporter.ConstructedDecksCache.FirstOrDefault(x => x.Id == selectedDeckId);
-			if(hsDeck != null && !selectedDeck.Cards.All(c => hsDeck.Cards.Any(c2 => c.Id == c2.Id && c.Count == c2.Count)))
-			{
-				var version = selectedDeck.Versions.FirstOrDefault(v => v.Cards.All(c => hsDeck.Cards.Any(c2 => c.Id == c2.Id && c.Count == c2.Count)));
-				if(version != null)
-				{
-					selectedDeck.SelectVersion(version);
-					Log.Info("Switching to version: " + version.Version.ShortVersionString);
-				}
-			}
-			else if(Equals(selectedDeck, DeckList.Instance.ActiveDeck))
-			{
-				Log.Info("Already using the correct deck");
-				return;
-			}
-			Core.MainWindow.SelectDeck(selectedDeck, true);
 		}
 	}
 }

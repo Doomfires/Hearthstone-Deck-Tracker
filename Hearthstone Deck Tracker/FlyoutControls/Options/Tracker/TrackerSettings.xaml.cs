@@ -35,6 +35,7 @@ namespace Hearthstone_Deck_Tracker.FlyoutControls.Options.Tracker
 
 		public void Load()
 		{
+			CheckboxCloseTray.IsChecked = Config.Instance.CloseToTray;
 			CheckboxMinimizeTray.IsChecked = Config.Instance.MinimizeToTray;
 			CheckboxStartMinimized.IsChecked = Config.Instance.StartMinimized;
 			CheckboxCheckForUpdates.IsChecked = Config.Instance.CheckForUpdates;
@@ -42,7 +43,6 @@ namespace Hearthstone_Deck_Tracker.FlyoutControls.Options.Tracker
 			CheckboxCloseWithHearthstone.IsChecked = Config.Instance.CloseWithHearthstone;
 			CheckboxStartHearthstoneWithHDT.IsChecked = Config.Instance.StartHearthstoneWithHDT;
 			CheckboxAdvancedWindowSearch.IsChecked = Config.Instance.UseAnyUnityWindow;
-			CheckboxLogTab.IsChecked = Config.Instance.ShowLogTab;
 			CheckBoxShowSplashScreen.IsChecked = Config.Instance.ShowSplashScreen;
 			CheckboxStartWithWindows.IsChecked = Config.Instance.StartWithWindows;
 			CheckBoxAnalytics.IsChecked = Config.Instance.GoogleAnalytics;
@@ -53,12 +53,18 @@ namespace Hearthstone_Deck_Tracker.FlyoutControls.Options.Tracker
 			CheckboxDataSaveAppData.IsChecked = Config.Instance.SaveDataInAppData;
 #endif
 
-			_initialized = true;
-		}
+			CheckboxShowNewsBar.IsChecked = null;
 
-		private void TrackerSettings_Loaded(object sender, RoutedEventArgs e)
-		{
-			CheckboxShowNewsBar.IsChecked = Core.MainWindow.StatusBarNews.Visibility != Visibility.Collapsed;
+			ConfigWrapper.IgnoreNewsIdChanged += () =>
+			{
+				CheckboxShowNewsBar.IsChecked = ConfigWrapper.IgnoreNewsId == -1;
+			};
+			RemoteConfig.Instance.Loaded += data =>
+			{
+				CheckboxShowNewsBar.IsChecked = Config.Instance.IgnoreNewsId < data?.News.Id;
+			};
+
+			_initialized = true;
 		}
 
 		private void SaveConfig(bool updateOverlay)
@@ -81,6 +87,22 @@ namespace Hearthstone_Deck_Tracker.FlyoutControls.Options.Tracker
 			if(!_initialized)
 				return;
 			Config.Instance.MinimizeToTray = false;
+			SaveConfig(false);
+		}
+
+		private void CheckboxCloseTray_Checked(object sender, RoutedEventArgs e)
+		{
+			if (!_initialized)
+				return;
+			Config.Instance.CloseToTray = true;
+			SaveConfig(false);
+		}
+
+		private void CheckboxCloseTray_Unchecked(object sender, RoutedEventArgs e)
+		{
+			if (!_initialized)
+				return;
+			Config.Instance.CloseToTray = false;
 			SaveConfig(false);
 		}
 
@@ -214,24 +236,6 @@ namespace Hearthstone_Deck_Tracker.FlyoutControls.Options.Tracker
 			Config.Save();
 		}
 
-		private void CheckboxLogTab_Checked(object sender, RoutedEventArgs e)
-		{
-			Helper.OptionsMain.TreeViewItemTrackerLogging.Visibility = Visibility.Visible;
-			if(!_initialized)
-				return;
-			Config.Instance.ShowLogTab = true;
-			Config.Save();
-		}
-
-		private void CheckboxLogTab_Unchecked(object sender, RoutedEventArgs e)
-		{
-			Helper.OptionsMain.TreeViewItemTrackerLogging.Visibility = Visibility.Collapsed;
-			if(!_initialized)
-				return;
-			Config.Instance.ShowLogTab = false;
-			Config.Save();
-		}
-
 		private void ButtonGamePath_OnClick(object sender, RoutedEventArgs e)
 		{
 			var dialog = new FolderBrowserDialog {Description = "Select your Hearthstone Directory", ShowNewFolderButton = false};
@@ -360,7 +364,8 @@ namespace Hearthstone_Deck_Tracker.FlyoutControls.Options.Tracker
 		{
 			if (!_initialized)
 				return;
-			Utility.NewsManager.ToggleNewsVisibility();
+			ConfigWrapper.IgnoreNewsId = ConfigWrapper.IgnoreNewsId == -1
+				? RemoteConfig.Instance.Data?.News?.Id ?? 0 : -1;
 		}
 
 		private void CheckboxAlternativeScreenCapture_Checked(object sender, RoutedEventArgs e)
@@ -404,6 +409,11 @@ namespace Hearthstone_Deck_Tracker.FlyoutControls.Options.Tracker
 				await Core.MainWindow.ShowMessage("Restart required.", "Click ok to restart HDT");
 				Core.MainWindow.Restart();
 			}
+		}
+
+		private void ButtonDebugWindow_Click(object sender, RoutedEventArgs e)
+		{
+			new DebugWindow(Core.Game).Show();
 		}
 	}
 }

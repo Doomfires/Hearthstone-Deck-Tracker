@@ -3,8 +3,11 @@ using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Linq;
 using System.Threading.Tasks;
+using HearthDb.Enums;
 using HearthMirror.Objects;
+using Hearthstone_Deck_Tracker.API;
 using Hearthstone_Deck_Tracker.Enums;
+using Hearthstone_Deck_Tracker.Enums.Hearthstone;
 using Hearthstone_Deck_Tracker.Hearthstone;
 using Hearthstone_Deck_Tracker.Hearthstone.Entities;
 using Hearthstone_Deck_Tracker.Importing;
@@ -14,6 +17,7 @@ using Hearthstone_Deck_Tracker.Utility.Extensions;
 using Hearthstone_Deck_Tracker.Utility.Logging;
 using Hearthstone_Deck_Tracker.Windows;
 using Card = Hearthstone_Deck_Tracker.Hearthstone.Card;
+using CardIds = HearthDb.CardIds;
 using Deck = Hearthstone_Deck_Tracker.Hearthstone.Deck;
 
 namespace Hearthstone_Deck_Tracker
@@ -32,6 +36,8 @@ namespace Hearthstone_Deck_Tracker
 		public static async Task DetectCurrentDeck()
 		{
 			var deck = DeckList.Instance.ActiveDeck;
+			if(deck == null && Core.Game.Player.SetAside.Any(x => x.CardId == CardIds.Collectible.Neutral.WhizbangTheWonderful))
+				deck = new Deck();
 			if(deck == null || deck.DeckId == IgnoredDeckId || _waitingForClass || _waitingForUserInput)
 				return;
 			if(string.IsNullOrEmpty(Core.Game.Player.Class))
@@ -41,8 +47,8 @@ namespace Hearthstone_Deck_Tracker
 					await Task.Delay(100);
 				_waitingForClass = false;
 			}
-			var cardEntites = Core.Game.Player.RevealedEntities.Where(x => (x.IsMinion || x.IsSpell || x.IsWeapon) && !x.Info.Created && !x.Info.Stolen && x.Card.Collectible).GroupBy(x => x.CardId).ToList();
-			var notFound = cardEntites.Where(x => !deck.GetSelectedDeckVersion().Cards.Any(c => c.Id == x.Key && c.Count >= x.Count())).ToList();
+			var cardEntites = RevealedEntites;
+			var notFound = GetMissingCards(cardEntites, deck);
 			if(notFound.Any())
 			{
 				var activeVersion = deck.Version;
@@ -64,6 +70,13 @@ namespace Hearthstone_Deck_Tracker
 				NotFoundCards.Clear();
 		}
 
+		private static List<IGrouping<string, Entity>> RevealedEntites => Core.Game.Player.RevealedEntities
+			.Where(x => x.IsPlayableCard && !x.Info.Created && !x.Info.Stolen && x.Card.Collectible).GroupBy(x => x.CardId)
+			.ToList();
+
+		private static List<IGrouping<string, Entity>> GetMissingCards(List<IGrouping<string, Entity>> revealed, Deck deck) =>
+			revealed.Where(x => !deck.GetSelectedDeckVersion().Cards.Any(c => c.Id == x.Key && c.Count >= x.Count())).ToList();
+
 		private static async Task AutoSelectDeck(Deck currentDeck, string heroClass, GameMode mode, Format? currentFormat, List<IGrouping<string, Entity>> cardEntites = null)
 		{
 			_waitingForDraws++;
@@ -71,7 +84,7 @@ namespace Hearthstone_Deck_Tracker
 			_waitingForDraws--;
 			if(_waitingForDraws > 0)
 				return;
-			var validDecks = DeckList.Instance.Decks.Where(x => x.Class == heroClass && !x.Archived).ToList();
+			var validDecks = DeckList.Instance.Decks.Where(x => x.Class == heroClass && !x.Archived && !x.IsDungeonDeck).ToList();
 			if(currentDeck != null)
 				validDecks.Remove(currentDeck);
 			validDecks = validDecks.FilterByMode(mode, currentFormat);
@@ -118,7 +131,7 @@ namespace Hearthstone_Deck_Tracker
 
 		private static bool AutoSelectDeckVersion(string heroClass, GameMode mode, Format? format, List<IGrouping<string, Entity>> cardEntites)
 		{
-			var validDecks = DeckList.Instance.Decks.Where(x => x.Class == heroClass && !x.Archived).ToList();
+			var validDecks = DeckList.Instance.Decks.Where(x => x.Class == heroClass && !x.Archived && !x.IsDungeonDeck).ToList();
 			validDecks = validDecks.FilterByMode(mode, format);
 			foreach(var deck in validDecks)
 			{
@@ -187,7 +200,20 @@ namespace Hearthstone_Deck_Tracker
 
 		public static void ImportDecks(IEnumerable<ImportedDeck> decks, bool brawl, bool importNew = true, bool updateExisting = true, bool select = true)
 		{
-			Deck toSelect = null;
+			var imported = ImportDecksTo(DeckList.Instance.Decks, decks, brawl, importNew, updateExisting);
+			if(!imported.Any())
+				return;
+			DeckList.Save();
+			Core.MainWindow.DeckPickerList.UpdateDecks();
+			Core.MainWindow.UpdateIntroLabelVisibility();
+			if(select)
+				Core.MainWindow.SelectDeck(imported.First(), true);
+			Core.UpdatePlayerCards(true);
+		}
+
+		public static List<Deck> ImportDecksTo(ICollection<Deck> targetList, IEnumerable<ImportedDeck> decks, bool brawl, bool importNew, bool updateExisting)
+		{
+			var importedDecks = new List<Deck>();
 			foreach(var deck in decks)
 			{
 				if(deck.SelectedImportOption is NewDeck)
@@ -195,7 +221,8 @@ namespace Hearthstone_Deck_Tracker
 					if(!importNew)
 						continue;
 					Log.Info($"Saving {deck.Deck.Name} as new deck.");
-					var newDeck = new Deck {
+					var newDeck = new Deck
+					{
 						Class = deck.Class,
 						Name = deck.Deck.Name,
 						HsId = deck.Deck.Id,
@@ -213,8 +240,13 @@ namespace Hearthstone_Deck_Tracker
 						newDeck.Tags.Add("Brawl");
 						newDeck.Name = Helper.ParseDeckNameTemplate(Config.Instance.BrawlDeckNameTemplate, newDeck);
 					}
-					DeckList.Instance.Decks.Add(newDeck);
-					toSelect = newDeck;
+
+					var existingWithId = targetList.FirstOrDefault(d => d.HsId == deck.Deck.Id);
+					if(existingWithId != null)
+						existingWithId.HsId = 0;
+
+					targetList.Add(newDeck);
+					importedDecks.Add(newDeck);
 				}
 				else
 				{
@@ -225,15 +257,23 @@ namespace Hearthstone_Deck_Tracker
 						continue;
 					var target = existing.Deck;
 					target.HsId = deck.Deck.Id;
-					if(brawl && !target.Tags.Any(x => x.ToUpper().Contains("BRAWL")))
+					if(brawl && !target.Tags.Any(x => x.ToUpper().Contains("BRAWL"))
+							&& (target.DeckStats.Games.Count == 0
+								|| target.DeckStats.Games.All(g => g.GameMode == GameMode.Brawl)))
 						target.Tags.Add("Brawl");
+					if(target.Archived)
+					{
+						target.Archived = false;
+						Log.Info($"Unarchiving deck: {deck.Deck.Name}.");
+					}
 					if(existing.NewVersion.Major == 0)
 						Log.Info($"Assinging id to existing deck: {deck.Deck.Name}.");
 					else
 					{
-						Log.Info($"Saving {deck.Deck.Name} as {existing.NewVersion.ShortVersionString} (prev={target.Version.ShortVersionString}).");
-						DeckList.Instance.Decks.Remove(target);
-						var oldDeck = (Deck)target.Clone();
+						Log.Info(
+							$"Saving {deck.Deck.Name} as {existing.NewVersion.ShortVersionString} (prev={target.Version.ShortVersionString}).");
+						targetList.Remove(target);
+						var oldDeck = (Deck) target.Clone();
 						oldDeck.Versions = new List<Deck>();
 						if(!brawl)
 							target.Name = deck.Deck.Name;
@@ -250,18 +290,13 @@ namespace Hearthstone_Deck_Tracker
 						});
 						foreach(var card in cards)
 							target.Cards.Add(card);
-						var clone = (Deck)target.Clone();
-						DeckList.Instance.Decks.Add(clone);
-						toSelect = clone;
+						var clone = (Deck) target.Clone();
+						targetList.Add(clone);
+						importedDecks.Add(clone);
 					}
 				}
 			}
-			DeckList.Save();
-			Core.MainWindow.DeckPickerList.UpdateDecks();
-			Core.MainWindow.UpdateIntroLabelVisibility();
-			if(select && toSelect != null)
-				Core.MainWindow.SelectDeck(toSelect, true);
-			Core.UpdatePlayerCards(true);
+			return importedDecks;
 		}
 
 		private static DateTime _lastAutoImport;
@@ -320,6 +355,175 @@ namespace Hearthstone_Deck_Tracker
 				return true;
 			}
 			return false;
+		}
+
+		internal static async void AutoSelectDeckById(IGame game, long id)
+		{
+			Log.Info($"Trying to select deck for id={id}");
+			if(id <= 0)
+			{
+				if(game.CurrentMode == Mode.ADVENTURE)
+				{
+					while(game.IsDungeonMatch == null)
+						await Task.Delay(500);
+					if(game.IsDungeonMatch.Value)
+						return;
+				}
+				Log.Info("No selected deck found, using no-deck mode");
+				Core.MainWindow.SelectDeck(null, true);
+				return;
+			}
+			AutoImportConstructed(false, game.CurrentMode == Mode.TAVERN_BRAWL);
+			var selectedDeck = DeckList.Instance.Decks.FirstOrDefault(x => x.HsId == id);
+			if(selectedDeck == null)
+			{
+				Log.Warn($"No deck with id={id} found");
+				return;
+			}
+			Log.Info("Found selected deck: " + selectedDeck.Name);
+			var hsDeck = DeckImporter.FromConstructed(false).FirstOrDefault(x => x.Deck.Id == id)?.Deck;
+			var selectedVersion = selectedDeck.GetSelectedDeckVersion();
+			if(hsDeck != null && !selectedVersion.Cards.All(c => hsDeck.Cards.Any(c2 => c.Id == c2.Id && c.Count == c2.Count)))
+			{
+				var nonSelectedVersions = selectedDeck.VersionsIncludingSelf.Where(v => v != selectedVersion.Version).Select(selectedDeck.GetVersion);
+				var version = nonSelectedVersions.FirstOrDefault(v => v.Cards.All(c => hsDeck.Cards.Any(c2 => c.Id == c2.Id && c.Count == c2.Count)));
+				if(version != null)
+				{
+					selectedDeck.SelectVersion(version);
+					Log.Info("Switching to version: " + version.Version.ShortVersionString);
+				}
+			}
+			else if(Equals(selectedDeck, DeckList.Instance.ActiveDeck))
+			{
+				Log.Info("Already using the correct deck");
+				return;
+			}
+			Core.MainWindow.SelectDeck(selectedDeck, true);
+		}
+
+		public static void SaveDeck(Deck deck, bool invokeApi = true)
+		{
+			deck.Edited();
+			DeckList.Instance.Decks.Add(deck);
+			DeckList.Save();
+			Core.MainWindow.DeckPickerList.SelectDeckAndAppropriateView(deck);
+			Core.MainWindow.DeckPickerList.UpdateDecks(forceUpdate: new[] { deck });
+			Core.MainWindow.SelectDeck(deck, true);
+			if(invokeApi)
+				DeckManagerEvents.OnDeckCreated.Execute(deck);
+		}
+
+		public static void SaveDeck(Deck baseDeck, Deck newVersion, bool overwriteCurrent = false)
+		{
+			DeckList.Instance.Decks.Remove(baseDeck);
+			baseDeck.Versions?.Clear();
+			if(!overwriteCurrent)
+				newVersion.Versions.Add(baseDeck);
+			newVersion.SelectedVersion = newVersion.Version;
+			newVersion.Archived = false;
+			SaveDeck(newVersion, false);
+			DeckManagerEvents.OnDeckUpdated.Execute(newVersion);
+		}
+
+		public static void DungeonRunMatchStarted(bool newRun)
+		{
+			if(!Config.Instance.DungeonAutoImport)
+				return;
+			Log.Info($"Dungeon run detected! New={newRun}");
+			var playerClass = Core.Game.Player.Class;
+			var revealed = RevealedEntites;
+			var existingDeck = DeckList.Instance.Decks
+				.Where(x => x.IsDungeonDeck && x.Class == playerClass
+							&& !(x.IsDungeonRunCompleted ?? false)
+							&& (!newRun || x.Cards.Count == 10)
+							&& GetMissingCards(revealed, x).Count == 0)
+				.OrderByDescending(x => x.LastEdited).FirstOrDefault();
+			if(existingDeck == null)
+			{
+				if(newRun)
+				{
+					var hero = Core.Game.Opponent.PlayerEntities.FirstOrDefault(x => x.IsHero)?.CardId;
+					var set = Database.GetCardFromId(hero)?.CardSet;
+					CreateDungeonDeck(playerClass, set ?? CardSet.INVALID);
+				}
+				else
+				{
+					Log.Info("We don't have an existing deck for this run, but it's not a new run");
+					if(DeckList.Instance.ActiveDeck != null)
+					{
+						Log.Info("Switching to no deck mode");
+						Core.MainWindow.SelectDeck(null, true);
+					}
+				}
+			}
+			else if(!existingDeck.Equals(DeckList.Instance.ActiveDeck))
+			{
+				Log.Info($"Selecting existing deck: {existingDeck.Name}");
+				Core.MainWindow.SelectDeck(existingDeck, true);
+			}
+		}
+
+		public static void UpdateDungeonRunDeck(DungeonInfo info)
+		{
+			if(!Config.Instance.DungeonAutoImport)
+				return;
+			Log.Info("Found dungeon run deck!");
+			var allCards = info.DbfIds.ToList();
+			if(info.PlayerChosenLoot > 0)
+			{
+				var loot = new[] { info.LootA, info.LootB, info.LootC };
+				var chosen = loot[info.PlayerChosenLoot - 1];
+				for(var i = 1; i < chosen.Count; i++)
+					allCards.Add(chosen[i]);
+			}
+			if(info.PlayerChosenTreasure > 0)
+				allCards.Add(info.Treasure[info.PlayerChosenTreasure - 1]);
+			var cards = allCards.GroupBy(x => x).Select(x =>
+			{
+				var card = Database.GetCardFromDbfId(x.Key, false);
+				card.Count = x.Count();
+				return card;
+			}).ToList();
+			if(!Config.Instance.DungeonRunIncludePassiveCards)
+				cards.RemoveAll(c => !c.Collectible && c.HideStats);
+			var playerClass = ((CardClass)info.HeroCardClass).ToString().ToUpperInvariant();
+			var deck = DeckList.Instance.Decks.FirstOrDefault(x => x.IsDungeonDeck && x.Class.ToUpperInvariant() == playerClass
+																		&& !(x.IsDungeonRunCompleted ?? false)
+																		&& x.Cards.All(e => cards.Any(c => c.Id == e.Id && c.Count >= e.Count)));
+			if(deck == null && (deck = CreateDungeonDeck(playerClass, (CardSet)info.CardSet)) == null)
+			{
+				Log.Info($"No existing deck - can't find default deck for {playerClass}");
+				return;
+			}
+			if(cards.All(c => deck.Cards.Any(e => c.Id == e.Id && c.Count == e.Count)))
+			{
+				Log.Info("No new cards");
+				return;
+			}
+			deck.Cards.Clear();
+			Helper.SortCardCollection(cards, false);
+			foreach(var card in cards)
+				deck.Cards.Add(card);
+			deck.LastEdited = DateTime.Now;
+			DeckList.Save();
+			Core.UpdatePlayerCards(true);
+			Log.Info("Updated dungeon run deck");
+		}
+
+		private static Deck CreateDungeonDeck(string playerClass, CardSet set)
+		{
+			Log.Info($"Creating new {playerClass} dungeon run deck (CardSet={set})");
+			var deck = DungeonRun.GetDefaultDeck(playerClass, set);
+			if(deck == null)
+			{
+				Log.Info($"Could not find default deck for {playerClass} in card set {set}");
+				return null;
+			}
+			DeckList.Instance.Decks.Add(deck);
+			DeckList.Save();
+			Core.MainWindow.DeckPickerList.UpdateDecks();
+			Core.MainWindow.SelectDeck(deck, true);
+			return deck;
 		}
 	}
 

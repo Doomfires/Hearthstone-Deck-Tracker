@@ -35,21 +35,29 @@ namespace Hearthstone_Deck_Tracker.LogReader.Handlers
 				game.CurrentMode = GetMode(match.Groups["curr"].Value);
 				game.PreviousMode = GetMode(match.Groups["prev"].Value);
 
-				if((DateTime.Now - logLine.Time).TotalSeconds < 5 && _lastAutoImport < logLine.Time
-					&& game.CurrentMode == Mode.TOURNAMENT)
+				if((DateTime.Now - logLine.Time).TotalSeconds < 5)
 				{
-					_lastAutoImport = logLine.Time;
-					var decks = DeckImporter.FromConstructed();
-					if(decks.Any() && (Config.Instance.ConstructedAutoImportNew || Config.Instance.ConstructedAutoUpdate))
-						DeckManager.ImportDecks(decks, false, Config.Instance.ConstructedAutoImportNew,
-							Config.Instance.ConstructedAutoUpdate);
+					if(_lastAutoImport < logLine.Time && game.CurrentMode == Mode.TOURNAMENT)
+					{
+						_lastAutoImport = logLine.Time;
+						var decks = DeckImporter.FromConstructed();
+						if(decks.Any() && (Config.Instance.ConstructedAutoImportNew || Config.Instance.ConstructedAutoUpdate))
+						{
+							DeckManager.ImportDecks(decks, false, Config.Instance.ConstructedAutoImportNew,
+								Config.Instance.ConstructedAutoUpdate);
+						}
+					}
+
+					if(game.PreviousMode == Mode.COLLECTIONMANAGER || game.CurrentMode == Mode.COLLECTIONMANAGER
+						|| game.PreviousMode == Mode.PACKOPENING)
+						CollectionHelper.UpdateCollection().Forget();
+
+					if(game.CurrentMode == Mode.HUB && !_checkedMirrorStatus)
+						CheckMirrorStatus();
 				}
 
 				if(game.PreviousMode == Mode.GAMEPLAY && game.CurrentMode != Mode.GAMEPLAY)
 					gameState.GameHandler.HandleInMenu();
-
-				if(game.CurrentMode == Mode.HUB && !_checkedMirrorStatus && (DateTime.Now - logLine.Time).TotalSeconds < 5)
-					CheckMirrorStatus();
 
 				if(game.CurrentMode == Mode.DRAFT)
 					Watchers.ArenaWatcher.Run();
@@ -63,6 +71,18 @@ namespace Hearthstone_Deck_Tracker.LogReader.Handlers
 
 				if(game.CurrentMode == Mode.TAVERN_BRAWL)
 					Core.Game.CacheBrawlInfo();
+
+				if(game.CurrentMode == Mode.ADVENTURE || game.PreviousMode == Mode.ADVENTURE && game.CurrentMode == Mode.GAMEPLAY)
+					Watchers.DungeonRunWatcher.Run();
+				else
+					Watchers.DungeonRunWatcher.Stop();
+
+				if(game.PlayerChallengeable && Config.Instance.ChallengeAction != Enums.HsActionType.None)
+					Watchers.FriendlyChallengeWatcher.Run();
+				else
+					Watchers.FriendlyChallengeWatcher.Stop(); 
+
+				API.GameEvents.OnModeChanged.Execute(game.CurrentMode);
 			}
 			else if(logLine.Line.Contains("Gameplay.Start"))
 			{
@@ -91,12 +111,6 @@ namespace Hearthstone_Deck_Tracker.LogReader.Handlers
 			OnHearthMirrorCheckFailed?.Invoke();
 		}
 
-		private Mode GetMode(string modeString)
-		{
-			Mode mode;
-			if(Enum.TryParse(modeString, out mode))
-				return mode;
-			return Mode.INVALID;
-		}
+		private Mode GetMode(string modeString) => Enum.TryParse(modeString, out Mode mode) ? mode : Mode.INVALID;
 	}
 }

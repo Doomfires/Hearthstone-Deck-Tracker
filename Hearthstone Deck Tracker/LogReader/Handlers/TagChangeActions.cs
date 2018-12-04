@@ -4,12 +4,13 @@ using System.Threading.Tasks;
 using HearthDb.Enums;
 using Hearthstone_Deck_Tracker.Enums;
 using Hearthstone_Deck_Tracker.Hearthstone;
-using Hearthstone_Deck_Tracker.Hearthstone.Entities;
 using Hearthstone_Deck_Tracker.LogReader.Interfaces;
 using Hearthstone_Deck_Tracker.Utility.Logging;
+using static HearthDb.CardIds;
 using static HearthDb.Enums.GameTag;
 using static HearthDb.Enums.PlayState;
 using static HearthDb.Enums.Zone;
+using CardIds = HearthDb.CardIds;
 
 namespace Hearthstone_Deck_Tracker.LogReader.Handlers
 {
@@ -26,7 +27,7 @@ namespace Hearthstone_Deck_Tracker.LogReader.Handlers
 				case CARDTYPE:
 					return () => CardTypeChange(gameState, id, game, value);
 				case LAST_CARD_PLAYED:
-					return () => LastCardPlayedChange(gameState, value);
+					return () => LastCardPlayedChange(gameState, game, value);
 				case DEFENDING:
 					return () => DefendingChange(gameState, id, game, value);
 				case ATTACKING:
@@ -35,8 +36,6 @@ namespace Hearthstone_Deck_Tracker.LogReader.Handlers
 					return () => ProposedDefenderChange(game, value);
 				case PROPOSED_ATTACKER:
 					return () => ProposedAttackerChange(game, value);
-				case NUM_MINIONS_PLAYED_THIS_TURN:
-					return () => NumMinionsPlayedThisTurnChange(gameState, game, value);
 				case PREDAMAGE:
 					return () => PredamageChange(gameState, id, game, value);
 				case NUM_TURNS_IN_PLAY:
@@ -53,8 +52,71 @@ namespace Hearthstone_Deck_Tracker.LogReader.Handlers
 					return () => StateChange(value, gameState);
 				case TRANSFORMED_FROM_CARD:
 					return () => TransformedFromCardChange(id, value, game);
+				case CREATOR:
+				case DISPLAYED_CREATOR:
+					return () => CreatorChanged(id, value, game);
+				case WHIZBANG_DECK_ID:
+					return () => WhizbangDeckIdChange(id, value, game);
 			}
 			return null;
+		}
+
+		private void WhizbangDeckIdChange(int id, int value, IGame game)
+		{
+			if(value == 0)
+				return;
+			if(!game.Entities.TryGetValue(id, out var entity))
+				return;
+			if(entity.IsControlledBy(game.Player.Id))
+				game.Player.IsPlayingWhizbang = true;
+			else if(entity.IsControlledBy(game.Opponent.Id))
+				game.Opponent.IsPlayingWhizbang = true;
+			if(!entity.IsPlayer)
+				return;
+			DeckManager.AutoSelectDeckById(game, value);
+		}
+
+		private void CreatorChanged(int id, int value, IGame game)
+		{
+			if(value == 0)
+				return;
+			if(game.Entities.TryGetValue(id, out var entity))
+			{
+				var displayedCreatorId = entity.GetTag(DISPLAYED_CREATOR);
+				if(displayedCreatorId == id)
+				{
+					// Some cards (e.g. Direhorn Hatchling) wrongfully set DISPLAYED_CREATOR
+					// on themselves instead of the created entity.
+					return;
+				}
+				if(game.Entities.TryGetValue(displayedCreatorId, out var displayedCreator))
+				{
+					// For some reason Far Sight sets DISPLAYED_CREATOR on the entity
+					if(displayedCreator.CardId == CardIds.Collectible.Shaman.FarSight)
+						return;
+				}
+
+				var creatorId = entity.GetTag(CREATOR);
+				if(creatorId == id)
+				{
+					// Same precaution as for Direhorn Hatching above.
+					return;
+				}
+				if(creatorId == game.GameEntity?.Id)
+					return;
+				// All cards created by Whizbang have a creator tag set
+				if(game.Entities.TryGetValue(creatorId, out var creator))
+				{
+					if(creator.CardId == CardIds.Collectible.Neutral.WhizbangTheWonderful)
+						return;
+					var controller = creator.GetTag(CONTROLLER);
+					var usingWhizbang = controller == game.Player?.Id && game.Player.IsPlayingWhizbang
+										|| controller == game.Opponent?.Id && game.Opponent.IsPlayingWhizbang;
+					if(usingWhizbang && creator.IsInSetAside)
+						return;
+				}
+				entity.Info.Created = true;
+			}
 		}
 
 		private void TransformedFromCardChange(int id, int value, IGame game)
@@ -75,7 +137,7 @@ namespace Hearthstone_Deck_Tracker.LogReader.Handlers
 
 		private void TurnChange(IHsGameState gameState, IGame game)
 		{
-			if(!gameState.SetupDone || game.PlayerEntity == null)
+			if(!game.SetupDone || game.PlayerEntity == null)
 				return;
 			var activePlayer = game.PlayerEntity.HasTag(CURRENT_PLAYER) ? ActivePlayer.Player : ActivePlayer.Opponent;
 			if(activePlayer == ActivePlayer.Player)
@@ -86,48 +148,53 @@ namespace Hearthstone_Deck_Tracker.LogReader.Handlers
 
 		private void StepChange(IHsGameState gameState, IGame game)
 		{
-			if(gameState.SetupDone || game.Entities.FirstOrDefault().Value?.Name != "GameEntity")
+			if(game.SetupDone || game.Entities.FirstOrDefault().Value?.Name != "GameEntity")
 				return;
 			Log.Info("Game was already in progress.");
 			gameState.WasInProgress = true;
 		}
 
-		private void LastCardPlayedChange(IHsGameState gameState, int value) => gameState.LastCardPlayed = value;
+		private void LastCardPlayedChange(IHsGameState gameState, IGame game, int value)
+		{
+			gameState.LastCardPlayed = value;
+			if(!(game.PlayerEntity?.IsCurrentPlayer ?? false))
+				return;
+			if(!game.Entities.TryGetValue(value, out var entity) || entity == null || !entity.IsMinion)
+				return;
+			if(entity.HasTag(MODULAR))
+			{
+				var pos = entity.GetTag(ZONE_POSITION);
+				var neighbour = game.Player?.Board.FirstOrDefault(x => x.GetTag(ZONE_POSITION) == pos + 1);
+				if(neighbour?.Card?.Race?.Equals(Race.MECHANICAL.ToString(),
+						StringComparison.CurrentCultureIgnoreCase) ?? false)
+					return;
+			}
+			gameState.GameHandler.HandlePlayerMinionPlayed(entity);
+		}
 
 		private void DefendingChange(IHsGameState gameState, int id, IGame game, int value)
 		{
-			Entity entity;
-			if(!game.Entities.TryGetValue(id, out entity))
+			if(!game.Entities.TryGetValue(id, out var entity))
 				return;
 			gameState.GameHandler.HandleDefendingEntity(value == 1 ? entity : null);
 		}
 
 		private void AttackingChange(IHsGameState gameState, int id, IGame game, int value)
 		{
-			Entity entity;
-			if(!game.Entities.TryGetValue(id, out entity))
+			if(!game.Entities.TryGetValue(id, out var entity))
 				return;
 			gameState.GameHandler.HandleAttackingEntity(value == 1 ? entity : null);
 		}
 
-		private void ProposedDefenderChange(IGame game, int value) => game.OpponentSecrets.ProposedDefenderEntityId = value;
+		private void ProposedDefenderChange(IGame game, int value) => game.ProposedDefender = value;
 
-		private void ProposedAttackerChange(IGame game, int value) => game.OpponentSecrets.ProposedAttackerEntityId = value;
-
-		private void NumMinionsPlayedThisTurnChange(IHsGameState gameState, IGame game, int value)
-		{
-			if(value <= 0)
-				return;
-			if(game.PlayerEntity?.IsCurrentPlayer ?? false)
-				gameState.GameHandler.HandlePlayerMinionPlayed();
-		}
+		private void ProposedAttackerChange(IGame game, int value) => game.ProposedAttacker = value;
 
 		private void PredamageChange(IHsGameState gameState, int id, IGame game, int value)
 		{
 			if(value <= 0)
 				return;
-			Entity entity;
-			if(!game.Entities.TryGetValue(id, out entity))
+			if(!game.Entities.TryGetValue(id, out var entity))
 				return;
 			gameState.GameHandler.HandleEntityPredamage(entity, value);
 		}
@@ -136,16 +203,14 @@ namespace Hearthstone_Deck_Tracker.LogReader.Handlers
 		{
 			if(value <= 0)
 				return;
-			Entity entity;
-			if(!game.Entities.TryGetValue(id, out entity))
+			if(!game.Entities.TryGetValue(id, out var entity))
 				return;
 			gameState.GameHandler.HandleTurnsInPlayChange(entity, gameState.GetTurnNumber());
 		}
 
 		private void FatigueChange(IHsGameState gameState, int value, IGame game, int id)
 		{
-			Entity entity;
-			if(!game.Entities.TryGetValue(id, out entity))
+			if(!game.Entities.TryGetValue(id, out var entity))
 				return;
 			var controller = entity.GetTag(CONTROLLER);
 			if(controller == game.Player.Id)
@@ -156,8 +221,7 @@ namespace Hearthstone_Deck_Tracker.LogReader.Handlers
 
 		private void ControllerChange(IHsGameState gameState, int id, IGame game, int prevValue, int value)
 		{
-			Entity entity;
-			if(!game.Entities.TryGetValue(id, out entity))
+			if(!game.Entities.TryGetValue(id, out var entity))
 				return;
 			if(prevValue <= 0)
 			{
@@ -184,8 +248,15 @@ namespace Hearthstone_Deck_Tracker.LogReader.Handlers
 
 		private void CardTypeChange(IHsGameState gameState, int id, IGame game, int value)
 		{
-			if(value == (int)CardType.HERO)
-				SetHeroAsync(id, game, gameState);
+			switch (value)
+			{
+				case (int)CardType.HERO:
+					SetHeroAsync(id, game, gameState);
+					break;
+				case (int)CardType.MINION:
+					MinionRevealed(id, game, gameState);
+					break;
+			}
 		}
 
 		private void PlaystateChange(IHsGameState gameState, int id, IGame game, int value)
@@ -194,8 +265,7 @@ namespace Hearthstone_Deck_Tracker.LogReader.Handlers
 				gameState.GameHandler.HandleConcede();
 			if(gameState.GameEnded)
 				return;
-			Entity entity;
-			if(!game.Entities.TryGetValue(id, out entity) || !entity.IsPlayer)
+			if(!game.Entities.TryGetValue(id, out var entity) || !entity.IsPlayer)
 				return;
 			switch((PlayState)value)
 			{
@@ -215,8 +285,7 @@ namespace Hearthstone_Deck_Tracker.LogReader.Handlers
 		{
 			if(id <= 3)
 				return;
-			Entity entity;
-			if(!game.Entities.TryGetValue(id, out entity))
+			if(!game.Entities.TryGetValue(id, out var entity))
 				return;
 			if(!entity.Info.OriginalZone.HasValue)
 			{
@@ -242,7 +311,7 @@ namespace Hearthstone_Deck_Tracker.LogReader.Handlers
 					break;
 				case Zone.INVALID:
 					var maxId = GetMaxHeroPowerId(game);
-					if(!gameState.SetupDone && (id <= maxId || game.GameEntity?.GetTag(STEP) == (int)Step.INVALID && entity.GetTag(ZONE_POSITION) < 5))
+					if(!game.SetupDone && (id <= maxId || game.GameEntity?.GetTag(STEP) == (int)Step.INVALID && entity.GetTag(ZONE_POSITION) < 5))
 					{
 						entity.Info.OriginalZone = DECK;
 						SimulateZoneChangesFromDeck(gameState, id, game, value, entity.CardId, maxId);
@@ -269,15 +338,14 @@ namespace Hearthstone_Deck_Tracker.LogReader.Handlers
 		{
 			if(value == (int)DECK)
 				return;
-			Entity entity;
-			if(!game.Entities.TryGetValue(id, out entity))
+			if(!game.Entities.TryGetValue(id, out var entity))
 				return;
 			if(value == (int)SETASIDE)
 			{
 				entity.Info.Created = true;
 				return;
 			}
-			if(entity.IsHero || entity.IsHeroPower || entity.HasTag(PLAYER_ID) || entity.GetTag(CARDTYPE) == (int)CardType.GAME
+			if(entity.IsHero && !entity.IsPlayableHero || entity.IsHeroPower || entity.HasTag(PLAYER_ID) || entity.GetTag(CARDTYPE) == (int)CardType.GAME
 				|| entity.HasTag(CREATOR))
 				return;
 			ZoneChangeFromDeck(gameState, id, game, (int)HAND, (int)DECK, entity.GetTag(CONTROLLER), cardId);
@@ -291,8 +359,7 @@ namespace Hearthstone_Deck_Tracker.LogReader.Handlers
 
 		private void ZoneChangeFromOther(IHsGameState gameState, int id, IGame game, int value, int prevValue, int controller, string cardId)
 		{
-			Entity entity;
-			if(!game.Entities.TryGetValue(id, out entity))
+			if(!game.Entities.TryGetValue(id, out var entity))
 				return;
 			if(entity.Info.OriginalZone == DECK && value != (int)DECK)
 			{
@@ -340,7 +407,12 @@ namespace Hearthstone_Deck_Tracker.LogReader.Handlers
 					if(controller == game.Player.Id)
 						gameState.GameHandler.HandlePlayerCreateInSetAside(entity, gameState.GetTurnNumber());
 					if(controller == game.Opponent.Id)
+					{
 						gameState.GameHandler.HandleOpponentCreateInSetAside(entity, gameState.GetTurnNumber());
+						if(gameState.CurrentBlock?.CardId == Collectible.Neutral.GrandArchivist
+							&& gameState.CurrentBlock.EntityDiscardedByArchivist != null)
+							gameState.CurrentBlock.EntityDiscardedByArchivist.CardId = entity.CardId;
+					}
 					break;
 				default:
 					Log.Warn($"unhandled zone change (id={id}): {prevValue} -> {value}");
@@ -356,8 +428,7 @@ namespace Hearthstone_Deck_Tracker.LogReader.Handlers
 				case GRAVEYARD:
 					if(controller == game.Opponent.Id)
 					{
-						Entity entity;
-						if(!game.Entities.TryGetValue(id, out entity))
+						if(!game.Entities.TryGetValue(id, out var entity))
 							return;
 						gameState.GameHandler.HandleOpponentSecretTrigger(entity, cardId, gameState.GetTurnNumber(), id);
 					}
@@ -370,8 +441,7 @@ namespace Hearthstone_Deck_Tracker.LogReader.Handlers
 
 		private void ZoneChangeFromPlay(IHsGameState gameState, int id, IGame game, int value, int prevValue, int controller, string cardId)
 		{
-			Entity entity;
-			if(!game.Entities.TryGetValue(id, out entity))
+			if(!game.Entities.TryGetValue(id, out var entity))
 				return;
 			switch((Zone)value)
 			{
@@ -389,7 +459,7 @@ namespace Hearthstone_Deck_Tracker.LogReader.Handlers
 					break;
 				case GRAVEYARD:
 					if(controller == game.Player.Id)
-						gameState.GameHandler.HandlePlayerPlayToGraveyard(entity, cardId, gameState.GetTurnNumber());
+						gameState.GameHandler.HandlePlayerPlayToGraveyard(entity, cardId, gameState.GetTurnNumber(), game.PlayerEntity?.IsCurrentPlayer ?? false);
 					else if(controller == game.Opponent.Id)
 						gameState.GameHandler.HandleOpponentPlayToGraveyard(entity, cardId, gameState.GetTurnNumber(), game.PlayerEntity?.IsCurrentPlayer ?? false);
 					break;
@@ -410,8 +480,7 @@ namespace Hearthstone_Deck_Tracker.LogReader.Handlers
 
 		private void ZoneChangeFromHand(IHsGameState gameState, int id, IGame game, int value, int prevValue, int controller, string cardId)
 		{
-			Entity entity;
-			if(!game.Entities.TryGetValue(id, out entity))
+			if(!game.Entities.TryGetValue(id, out var entity))
 				return;
 			switch((Zone)value)
 			{
@@ -458,8 +527,7 @@ namespace Hearthstone_Deck_Tracker.LogReader.Handlers
 
 		private void ZoneChangeFromDeck(IHsGameState gameState, int id, IGame game, int value, int prevValue, int controller, string cardId)
 		{
-			Entity entity;
-			if(!game.Entities.TryGetValue(id, out entity))
+			if(!game.Entities.TryGetValue(id, out var entity))
 				return;
 			switch((Zone)value)
 			{
@@ -471,7 +539,7 @@ namespace Hearthstone_Deck_Tracker.LogReader.Handlers
 					break;
 				case SETASIDE:
 				case REMOVEDFROMGAME:
-					if(!gameState.SetupDone)
+					if(!game.SetupDone)
 					{
 						entity.Info.Created = true;
 						return;
@@ -491,6 +559,10 @@ namespace Hearthstone_Deck_Tracker.LogReader.Handlers
 						{
 							gameState.JoustReveals--;
 							break;
+						}
+						if (gameState.CurrentBlock?.CardId == Collectible.Neutral.GrandArchivist)
+						{
+							gameState.CurrentBlock.EntityDiscardedByArchivist = entity;
 						}
 						gameState.GameHandler.HandleOpponentRemoveFromDeck(entity, gameState.GetTurnNumber());
 					}
@@ -531,10 +603,9 @@ namespace Hearthstone_Deck_Tracker.LogReader.Handlers
 			}
 			if(string.IsNullOrEmpty(game.Player.Class) && id == game.PlayerEntity.GetTag(HERO_ENTITY))
 			{
-				Entity entity;
-				if(!game.Entities.TryGetValue(id, out entity))
+				if(!game.Entities.TryGetValue(id, out var entity))
 					return;
-				gameState.GameHandler.SetPlayerHero(Database.GetHeroNameFromId(entity.CardId));
+				gameState.GameHandler.SetPlayerHero(entity.CardId);
 				return;
 			}
 			if(game.OpponentEntity == null)
@@ -546,11 +617,16 @@ namespace Hearthstone_Deck_Tracker.LogReader.Handlers
 			}
 			if(string.IsNullOrEmpty(game.Opponent.Class) && id == game.OpponentEntity.GetTag(HERO_ENTITY))
 			{
-				Entity entity;
-				if(!game.Entities.TryGetValue(id, out entity))
+				if(!game.Entities.TryGetValue(id, out var entity))
 					return;
-				gameState.GameHandler.SetOpponentHero(Database.GetHeroNameFromId(entity.CardId));
+				gameState.GameHandler.SetOpponentHero(entity.CardId);
 			}
+		}
+
+		private void MinionRevealed(int id, IGame game, IHsGameState gameState)
+		{
+			if(game.Entities.TryGetValue(id, out var entity))
+				game.SecretsManager.OnEntityRevealedAsMinion(entity);
 		}
 	}
 }

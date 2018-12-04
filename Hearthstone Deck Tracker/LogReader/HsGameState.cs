@@ -35,16 +35,14 @@ namespace Hearthstone_Deck_Tracker.LogReader
 		public Dictionary<int, IList<string>> KnownCardIds { get; set; }
 		public int LastCardPlayed { get; set; }
 		public bool WasInProgress { get; set; }
-		public bool SetupDone { get; set; }
 		public int GameTriggerCount { get; set; }
 		public Zone CurrentEntityZone { get; set; }
 		public bool DeterminedPlayers => _game.Player.Id > 0 && _game.Opponent.Id > 0;
+		public Tuple<int, string> ChameleosReveal { get; set; }
 
 		public int GetTurnNumber()
 		{
-			if(!_game.IsMulliganDone)
-				return 0;
-			return (_game.GameEntity?.GetTag(GameTag.TURN) + 1) / 2 ?? 0;
+			return _game.GetTurnNumber();
 		}
 
 		public void Reset()
@@ -54,7 +52,6 @@ namespace Hearthstone_Deck_Tracker.LogReader
 			KnownCardIds.Clear();
 			LastGameStart = DateTime.Now;
 			WasInProgress = false;
-			SetupDone = false;
 			CurrentEntityId = 0;
 			GameTriggerCount = 0;
 			CurrentBlock = null;
@@ -64,8 +61,6 @@ namespace Hearthstone_Deck_Tracker.LogReader
 		public void SetCurrentEntity(int id)
 		{
 			CurrentEntityId = id;
-			if(_game.Entities.TryGetValue(CurrentEntityId, out var entity))
-				entity.Info.HasOutstandingTagChanges = true;
 		}
 
 		public void ResetCurrentEntity() => CurrentEntityId = 0;
@@ -73,10 +68,10 @@ namespace Hearthstone_Deck_Tracker.LogReader
 		private int _maxBlockId;
 		public Block CurrentBlock { get; private set; }
 
-		public void BlockStart()
+		public void BlockStart(string type, string cardId)
 		{
 			var blockId = _maxBlockId++;
-			CurrentBlock = CurrentBlock?.CreateChild(blockId) ?? new Block(null, blockId);
+			CurrentBlock = CurrentBlock?.CreateChild(blockId, type, cardId) ?? new Block(null, blockId, type, cardId);
 		}
 
 		public void BlockEnd()
@@ -92,14 +87,20 @@ namespace Hearthstone_Deck_Tracker.LogReader
 		public Block Parent { get; }
 		public IList<Block> Children { get; }
 		public int Id { get; }
+		public string Type { get; }
+		public string CardId { get; }
 
-		public Block(Block parent, int blockId)
+		public Entity EntityDiscardedByArchivist { get; set; }
+
+		public Block(Block parent, int blockId, string type, string cardId)
 		{
 			Parent = parent;
 			Children = new List<Block>();
 			Id = blockId;
+			Type = type;
+			CardId = cardId;
 		}
 
-		public Block CreateChild(int blockId) => new Block(this, blockId);
+		public Block CreateChild(int blockId, string type, string cardId) => new Block(this, blockId, type, cardId);
 	}
 }

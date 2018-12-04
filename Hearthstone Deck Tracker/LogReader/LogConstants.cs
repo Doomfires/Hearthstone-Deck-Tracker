@@ -25,7 +25,7 @@ namespace Hearthstone_Deck_Tracker.LogReader
 		public static class PowerTaskList
 		{
 			public static readonly Regex BlockStartRegex =
-				new Regex(@".*BLOCK_START.*BlockType=(?<type>(POWER|TRIGGER)).*id=(?<id>\d*).*(cardId=(?<Id>(\w*))).*Target=(?<target>(.+))");
+				new Regex(@".*BLOCK_START.*BlockType=(?<type>(\w+)).*id=(?<id>\d*).*(cardId=(?<Id>(\w*))).*EffectCardId=(?<effectCardId>(.*))\sEffectIndex=.*Target=(?<target>(.+)).*SubOption=(?<subOption>(.+))");
 
 			public static readonly Regex CardIdRegex = new Regex(@"cardId=(?<cardId>(\w+))");
 			public static readonly Regex CreationRegex = new Regex(@"FULL_ENTITY - Updating.*id=(?<id>(\d+)).*zone=(?<zone>(\w+)).*CardID=(?<cardId>(\w*))");
@@ -44,7 +44,9 @@ namespace Hearthstone_Deck_Tracker.LogReader
 				new Regex(@"TAG_CHANGE\ Entity=(?<entity>(.+))\ tag=(?<tag>(\w+))\ value=(?<value>(\w+))");
 
 			public static readonly Regex UpdatingEntityRegex =
-				new Regex(@"SHOW_ENTITY\ -\ Updating\ Entity=(?<entity>(.+))\ CardID=(?<cardId>(\w*))");
+				new Regex(@"(?<type>(SHOW_ENTITY|CHANGE_ENTITY))\ -\ Updating\ Entity=(?<entity>(.+))\ CardID=(?<cardId>(\w*))");
+
+			public static readonly Regex HideEntityRegex = new Regex(@"HIDE_ENTITY\ -\ .* id=(?<id>(\d+))");
 		}
 	}
 }

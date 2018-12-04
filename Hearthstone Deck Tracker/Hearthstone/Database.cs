@@ -18,18 +18,17 @@ namespace Hearthstone_Deck_Tracker.Hearthstone
 		{
 			if(string.IsNullOrEmpty(cardId))
 				return null;
-			HearthDb.Card dbCard;
-			if(Cards.All.TryGetValue(cardId, out dbCard))
+			if(Cards.All.TryGetValue(cardId, out HearthDb.Card dbCard))
 				return new Card(dbCard);
 			Log.Warn("Could not find card with ID=" + cardId);
 			return UnknownCard;
 		}
 
-		public static Card GetCardFromDbfId(int dbfId)
+		public static Card GetCardFromDbfId(int dbfId, bool collectible = true)
 		{
 			if(dbfId == 0)
 				return null;
-			var card = Cards.GetFromDbfId(dbfId);
+			var card = Cards.GetFromDbfId(dbfId, collectible);
 			if(card != null)
 				return new Card(card);
 			Log.Warn("Could not find card with DbfId=" + dbfId);
@@ -44,8 +43,7 @@ namespace Hearthstone_Deck_Tracker.Hearthstone
 				var selectedLangs = Config.Instance.AlternativeLanguages.Concat(new[] {Config.Instance.SelectedLanguage});
 				foreach(var selectedLang in selectedLangs)
 				{
-					Locale lang;
-					if(Enum.TryParse(selectedLang, out lang) && !langs.Contains(lang))
+					if(Enum.TryParse(selectedLang, out Locale lang) && !langs.Contains(lang))
 						langs.Add(lang);
 				}
 			}
@@ -73,14 +71,27 @@ namespace Hearthstone_Deck_Tracker.Hearthstone
 		{
 			if(string.IsNullOrEmpty(id))
 				return returnIdIfNotFound ? id : null;
-			string name;
 			var baseId = GetBaseId(id);
-			if(CardIds.HeroIdDict.TryGetValue(baseId, out name))
+			if(CardIds.HeroIdDict.TryGetValue(baseId, out var name))
 				return name;
 			var card = GetCardFromId(baseId);
-			if(string.IsNullOrEmpty(card?.Name) || card.Name == "UNKNOWN" || card.Type != "Hero")
-				return returnIdIfNotFound ? baseId : null;
+			bool IsValidHeroCard(Card c) => !string.IsNullOrEmpty(c?.Name) && c.Name != "UNKNOWN" && c.Type == "Hero";
+			if(!IsValidHeroCard(card))
+			{
+				card = GetCardFromId(id);
+				if(!IsValidHeroCard(card))
+					return returnIdIfNotFound ? baseId : null;
+			}
 			return card.Name;
+		}
+
+		public static Card GetHeroCardFromClass(string className)
+		{
+			if(string.IsNullOrEmpty(className))
+				return null;
+			if(!CardIds.HeroNameDict.TryGetValue(className, out var heroId) || string.IsNullOrEmpty(heroId))
+				return null;
+			return GetCardFromId(heroId);
 		}
 
 		private static string GetBaseId(string cardId)
